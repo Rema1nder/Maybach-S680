@@ -51,6 +51,21 @@ volatile uint8_t g_bt_key_control_mode = 0;  /* 蓝牙遥控模式标志 */
 float BDI_V = 0;                             /* 电池电压 (V) */
 
 /* ========================================================================== */
+/*                          低电压警告相关定义                                  */
+/* ========================================================================== */
+#define LOW_BATTERY_THRESHOLD     7.4f       /* 低电压阈值 (V), 2S锂电池最低安全电压 */
+#define LOW_BATTERY_RECOVER_TH    7.6f       /* 电压恢复阈值 (V), 滞回防抖 */
+#define LOW_BATTERY_LED_PERIOD_MS 300        /* LED闪烁周期 (ms) */
+#define LOW_BATTERY_MSG_PERIOD_MS 5000       /* 低电压消息发送周期 (ms) */
+#define LOW_BATTERY_DEBOUNCE_CNT  50         /* 消抖计数, 约100ms连续低电压才触发 */
+
+static uint8_t g_low_battery_flag = 0;       /* 低电压标志 */
+static uint32_t g_low_battery_led_timer = 0; /* LED闪烁定时器 */
+static uint32_t g_low_battery_msg_timer = 0; /* 消息发送定时器 */
+static uint8_t g_low_battery_led_state = 0;  /* LED当前状态: 0=灭, 1=亮 */
+static uint16_t g_low_battery_debounce = 0;  /* 低电压消抖计数器 */
+
+/* ========================================================================== */
 /*                              系统初始化                                     */
 /* ========================================================================== */
 
@@ -265,18 +280,9 @@ static void HandleKeyEvent(Key_Event_t *event)
 			}
 			break;
 
-		/* K3: 打印传感器状态 */
+		/* K3: 打印电池电压 */
 		case KEY_K3:
-			RGB_SetColor(RGB_COLOR_OFF);
-			MuxADC_SampleAll();
-			BlackPoint_Finder_Init();
-			printf("State: ");
-			for(int i = 0; i < 16; i++)
-			{
-				uint8_t is_black = BlackPoint_Finder_IsBlackPoint(i, g_mux_adc_values[i]);
-				printf("%d ", is_black);
-			}
-			printf("\r\n");
+			printf("Battery Voltage: %.2fV\r\n", BDI_V);
 			break;
 
 		/* K4: 急停/解除急停 */
@@ -337,7 +343,64 @@ int main(void)
 		BT_Process();
 		
 		/* 读取电池电压 */
-		BDI_V = (float)g_mux_adc_values[16] * 0.00426508726f;
+		BDI_V = (float)g_mux_adc_values[16] * 0.003800f;
+		
+		/* ====== 低电压警告检测 (带消抖和滞回) ====== */
+		if(BDI_V > 0.5f && BDI_V < LOW_BATTERY_THRESHOLD)
+		{
+			/* 电压低于阈值, 增加消抖计数 */
+			if(g_low_battery_debounce < LOW_BATTERY_DEBOUNCE_CNT)
+			{
+				g_low_battery_debounce++;
+			}
+			else if(!g_low_battery_flag)
+			{
+				/* 连续低电压达到阈值, 确认低电压状态 */
+				g_low_battery_flag = 1;
+				g_low_battery_msg_timer = 0;  /* 立即发送第一条警告 */
+			}
+		}
+		else if(BDI_V >= LOW_BATTERY_RECOVER_TH)
+		{
+			/* 电压高于恢复阈值, 清除消抖计数 */
+			g_low_battery_debounce = 0;
+			
+			if(g_low_battery_flag)
+			{
+				/* 电压恢复正常, 清除低电压标志 */
+				g_low_battery_flag = 0;
+				RGB_SetColor(RGB_COLOR_OFF);
+				printf("Battery voltage recovered: %.2fV\r\n", BDI_V);
+			}
+		}
+		
+		/* 低电压状态下的LED闪烁和消息发送 */
+		if(g_low_battery_flag)
+		{
+			/* LED红色闪烁 (最醒目) */
+			if((g_systick_ms - g_low_battery_led_timer) >= LOW_BATTERY_LED_PERIOD_MS)
+			{
+				g_low_battery_led_timer = g_systick_ms;
+				g_low_battery_led_state = !g_low_battery_led_state;
+				
+				if(g_low_battery_led_state)
+				{
+					RGB_SetColor(RGB_COLOR_R);  /* 红色亮 */
+				}
+				else
+				{
+					RGB_SetColor(RGB_COLOR_OFF);  /* 灭 */
+				}
+			}
+			
+			/* 定期发送低电压警告消息 */
+			if((g_systick_ms - g_low_battery_msg_timer) >= LOW_BATTERY_MSG_PERIOD_MS)
+			{
+				g_low_battery_msg_timer = g_systick_ms;
+				printf("[WARNING] Low Battery! Voltage: %.2fV (Threshold: %.1fV)\r\n", BDI_V, LOW_BATTERY_THRESHOLD);
+				printf("Please charge immediately to avoid over-discharge!\r\n");
+			}
+		}
 		
 		/* 处理按键事件 */
 		Key_Event_t *event = Key_GetEvent();
