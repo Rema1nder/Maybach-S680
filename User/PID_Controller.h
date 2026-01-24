@@ -230,5 +230,34 @@ void PositionPID_SetGlobalParams(float kp, float ki, float kd, float gyro_kd);
  */
 void PositionPID_ResetState(void);
 
+/* ========================================================================== */
+/*                          轮子锁定 (Position Hold) 功能                       */
+/* ========================================================================== */
+
+/**
+ * @brief 启用轮子锁定模式
+ * @note  记录当前编码器位置作为目标，使用PID闭环保持轮子不动
+ *        适用于蓝牙模式下的IDLE状态，防止因重力滑动
+ */
+void WheelLock_Enable(void);
+
+/**
+ * @brief 禁用轮子锁定模式
+ * @note  释放轮子锁定，允许正常运动
+ */
+void WheelLock_Disable(void);
+
+/**
+ * @brief 检查轮子锁定是否启用
+ * @return 1=启用, 0=禁用
+ */
+uint8_t WheelLock_IsEnabled(void);
+
+/**
+ * @brief 轮子锁定控制更新 (在SysTick中调用)
+ * @note  当锁定启用时，使用PID控制保持轮子在锁定位置
+ */
+void WheelLock_Update(void);
+
 #endif /* __PID_CONTROLLER_H__ */
 

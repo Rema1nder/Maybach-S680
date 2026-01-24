@@ -108,6 +108,7 @@ static uint16_t BT_SpeedPercentToDuty(uint8_t speed_percent)
  * @brief  应用蓝牙运动指令
  * @param  state  蓝牙状态结构体指针
  * @note   包含软启动斜坡控制, 防止电机突然加速
+ *         IDLE状态时启用轮子锁定，防止因重力滑落
  */
 static void BT_ApplyMotion(const BT_State_t *state)
 {
@@ -117,11 +118,12 @@ static void BT_ApplyMotion(const BT_State_t *state)
 
 	if(state == NULL) return;
 
-	/* 急停状态: 立即停止所有电机 */
+	/* 急停状态: 立即停止所有电机，禁用锁定 */
 	if(state->emergency_stop)
 	{
 		ramp_duty = 0;
 		last_mode = MOTION_IDLE;
+		WheelLock_Disable();
 		Motor_StopAll();
 		Motor_Disable();
 		PID_SetBluetoothTarget(0.0f, 0.0f, 0);
@@ -129,15 +131,26 @@ static void BT_ApplyMotion(const BT_State_t *state)
 		return;
 	}
 
-	/* 空闲状态: 停止电机 */
+	/* 空闲状态: 启用轮子锁定，保持位置不动 */
 	if(state->motion_mode == MOTION_IDLE)
 	{
-		ramp_duty = 0;
+		/* 从运动状态切换到空闲，启用锁定 */
+		if(last_mode != MOTION_IDLE || !WheelLock_IsEnabled())
+		{
+			ramp_duty = 0;
+			SpeedPID_ResetState();
+			WheelLock_Enable();  /* 记录当前位置并启用锁定 */
+		}
 		last_mode = MOTION_IDLE;
-		Motor_StopAll();
 		PID_SetBluetoothTarget(0.0f, 0.0f, 0);
-		SpeedPID_ResetState();
+		/* 锁定控制在 PID_Control_Update 中执行 */
 		return;
+	}
+
+	/* 进入运动状态: 禁用轮子锁定 */
+	if(WheelLock_IsEnabled())
+	{
+		WheelLock_Disable();
 	}
 
 	/* 模式切换: 重置斜坡 */
@@ -262,6 +275,7 @@ static void HandleKeyEvent(Key_Event_t *event)
 				/* 退出蓝牙模式 */
 				g_bt_key_control_mode = 0;
 				BT_HandleKeyControlModeChange(0);
+				WheelLock_Disable();  /* 禁用轮子锁定 */
 				Motor_StopAll();
 				Motor_Disable();
 				SpeedPID_ResetState();
@@ -276,6 +290,7 @@ static void HandleKeyEvent(Key_Event_t *event)
 				BT_HandleKeyControlModeChange(1);
 				SpeedPID_ResetState();
 				Motor_Enable();
+				WheelLock_Enable();  /* 启用轮子锁定 (默认锁定状态) */
 				RGB_SetColor(RGB_COLOR_B);
 			}
 			break;
@@ -301,6 +316,7 @@ static void HandleKeyEvent(Key_Event_t *event)
 				star_car = 0;
 				g_bt_key_control_mode = 0;
 				BT_HandleKeyControlModeChange(0);
+				WheelLock_Disable();  /* 急停时禁用锁定 */
 				SpeedPID_ResetState();
 				BT_EmergencyStop();
 			}

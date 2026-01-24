@@ -17,6 +17,8 @@
 /* ========================================================================== */
 extern int16_t position_get;           /* 传感器检测到的黑线位置 (放大10倍) */
 extern volatile uint32_t g_systick_ms; /* 系统滴答计时器 (毫秒) */
+extern int32_t left_ecoder_cnt;        /* 左轮编码器累积计数 */
+extern int32_t right_ecoder_cnt;       /* 右轮编码器累积计数 */
 
 /* ========================================================================== */
 /*                              内部状态变量                                   */
@@ -43,6 +45,25 @@ static uint8_t g_gyro_damping_enabled = 1;   /* 陀螺仪阻尼使能 (抑制转
 static float g_bt_target_left = 0.0f;
 static float g_bt_target_right = 0.0f;
 static uint16_t g_bt_duty_cap = 0;
+
+/* ========================================================================== */
+/*                          轮子锁定 (Position Hold) 状态变量                   */
+/* ========================================================================== */
+static uint8_t g_wheel_lock_enabled = 0;       /* 锁定使能标志 */
+static uint8_t g_wheel_lock_braking = 0;       /* 刹车阶段标志 (进入锁定前先刹车) */
+static int32_t g_lock_target_left = 0;         /* 左轮锁定目标位置 */
+static int32_t g_lock_target_right = 0;        /* 右轮锁定目标位置 */
+static float g_lock_last_error_left = 0.0f;    /* 锁定PD历史误差 */
+static float g_lock_last_error_right = 0.0f;
+static uint8_t g_lock_stable_count = 0;        /* 稳定计数器 (用于刹车阶段) */
+
+/* 锁定PID参数 - 优化后防止振荡 */
+#define LOCK_KP           4.0f      /* 位置误差比例系数 (降低以减少超调) */
+#define LOCK_KD           1.0f      /* 位置误差微分系数 */
+#define LOCK_KV           80.0f     /* 速度阻尼系数 (直接用速度反馈抑制振荡) */
+#define LOCK_OUTPUT_MAX   3500.0f   /* 锁定PWM输出上限 */
+#define LOCK_DEADZONE     5         /* 位置死区 (增大以减少微小调整) */
+#define LOCK_BRAKE_SPEED_TH  8      /* 刹车阶段速度阈值 (低于此值认为已停止) */
 
 /* ========================================================================== */
 /*                           速度环 PID 实现                                   */
@@ -485,11 +506,19 @@ extern volatile uint8_t g_bt_key_control_mode;
  * @brief  PID 控制主循环 (在 SysTick 中断中调用, 周期 2ms)
  * 
  * @details 控制优先级:
- *          1. 蓝牙遥控模式: 直接使用蓝牙设定的目标速度
- *          2. 巡线模式: 位置环 + 速度环双环控制
+ *          1. 轮子锁定模式: 使用位置PD控制保持位置不动
+ *          2. 蓝牙遥控模式: 直接使用蓝牙设定的目标速度
+ *          3. 巡线模式: 位置环 + 速度环双环控制
  */
 void PID_Control_Update(void)
 {
+	/* ====== 轮子锁定模式 (最高优先级) ====== */
+	if(g_wheel_lock_enabled)
+	{
+		WheelLock_Update();
+		return;
+	}
+	
 	/* ====== 蓝牙遥控模式 ====== */
 	if(g_bt_key_control_mode)
 	{
@@ -606,5 +635,149 @@ void PID_GyroDamping_Enable(uint8_t enable)
 uint8_t PID_GyroDamping_IsEnabled(void)
 {
 	return g_gyro_damping_enabled;
+}
+
+/* ========================================================================== */
+/*                          轮子锁定 (Position Hold) 功能                      */
+/* ========================================================================== */
+
+/**
+ * @brief  启用轮子锁定模式
+ * @note   先进入刹车阶段，等轮子速度降低后再记录锁定位置
+ *         这样可以避免从高速运动状态突然锁定导致的振荡
+ */
+void WheelLock_Enable(void)
+{
+	/* 检查当前速度，如果还在运动则先进入刹车阶段 */
+	if(abs(speed_left) > LOCK_BRAKE_SPEED_TH || abs(speed_right) > LOCK_BRAKE_SPEED_TH)
+	{
+		/* 进入刹车阶段 */
+		g_wheel_lock_braking = 1;
+		g_wheel_lock_enabled = 1;
+		g_lock_stable_count = 0;
+		Motor_Enable();
+		return;
+	}
+	
+	/* 速度已经很低，直接记录当前位置作为锁定目标 */
+	g_lock_target_left = left_ecoder_cnt;
+	g_lock_target_right = right_ecoder_cnt;
+	
+	/* 清除历史误差 */
+	g_lock_last_error_left = 0.0f;
+	g_lock_last_error_right = 0.0f;
+	
+	/* 使能锁定，跳过刹车阶段 */
+	g_wheel_lock_braking = 0;
+	g_wheel_lock_enabled = 1;
+	g_lock_stable_count = 0;
+	
+	/* 确保电机使能 */
+	Motor_Enable();
+}
+
+/**
+ * @brief  禁用轮子锁定模式
+ */
+void WheelLock_Disable(void)
+{
+	g_wheel_lock_enabled = 0;
+	g_wheel_lock_braking = 0;
+	g_lock_stable_count = 0;
+}
+
+/**
+ * @brief  检查轮子锁定是否启用
+ */
+uint8_t WheelLock_IsEnabled(void)
+{
+	return g_wheel_lock_enabled;
+}
+
+/**
+ * @brief  轮子锁定PD控制更新 (在SysTick中调用)
+ * @note   使用位置PD控制 + 速度阻尼保持轮子在目标位置
+ *         P项提供恢复力，D项+速度阻尼防止振荡
+ */
+void WheelLock_Update(void)
+{
+	if(!g_wheel_lock_enabled) return;
+	
+	/* ====== 刹车阶段: 等待轮子速度降低 ====== */
+	if(g_wheel_lock_braking)
+	{
+		/* 使用纯速度阻尼进行刹车 (反向力与速度成正比) */
+		float brake_left = -LOCK_KV * (float)speed_left;
+		float brake_right = -LOCK_KV * (float)speed_right;
+		
+		/* 刹车输出限幅 */
+		if(brake_left > LOCK_OUTPUT_MAX) brake_left = LOCK_OUTPUT_MAX;
+		if(brake_left < -LOCK_OUTPUT_MAX) brake_left = -LOCK_OUTPUT_MAX;
+		if(brake_right > LOCK_OUTPUT_MAX) brake_right = LOCK_OUTPUT_MAX;
+		if(brake_right < -LOCK_OUTPUT_MAX) brake_right = -LOCK_OUTPUT_MAX;
+		
+		Motor_SetSpeedWithDirection(MOTOR_L, brake_left);
+		Motor_SetSpeedWithDirection(MOTOR_R, brake_right);
+		
+		/* 检查速度是否已经足够低 */
+		if(abs(speed_left) <= LOCK_BRAKE_SPEED_TH && abs(speed_right) <= LOCK_BRAKE_SPEED_TH)
+		{
+			g_lock_stable_count++;
+			/* 连续多次检测到低速，确认已停止 (约50ms) */
+			if(g_lock_stable_count >= 25)
+			{
+				/* 刹车完成，记录当前位置作为锁定目标 */
+				g_lock_target_left = left_ecoder_cnt;
+				g_lock_target_right = right_ecoder_cnt;
+				g_lock_last_error_left = 0.0f;
+				g_lock_last_error_right = 0.0f;
+				g_wheel_lock_braking = 0;  /* 退出刹车阶段，进入锁定保持 */
+			}
+		}
+		else
+		{
+			g_lock_stable_count = 0;  /* 速度还比较高，重置计数 */
+		}
+		return;
+	}
+	
+	/* ====== 锁定保持阶段: 位置PD + 速度阻尼 ====== */
+	
+	/* 计算位置误差 */
+	float error_left = (float)(g_lock_target_left - left_ecoder_cnt);
+	float error_right = (float)(g_lock_target_right - right_ecoder_cnt);
+	
+	/* 死区处理 */
+	float p_left = 0.0f, p_right = 0.0f;
+	if(fabsf(error_left) >= LOCK_DEADZONE)
+		p_left = LOCK_KP * error_left;
+	if(fabsf(error_right) >= LOCK_DEADZONE)
+		p_right = LOCK_KP * error_right;
+	
+	/* PD控制计算 */
+	float d_error_left = error_left - g_lock_last_error_left;
+	float d_error_right = error_right - g_lock_last_error_right;
+	
+	/* 速度阻尼项 (直接使用编码器速度反馈，比微分项更稳定) */
+	float velocity_damping_left = -LOCK_KV * (float)speed_left;
+	float velocity_damping_right = -LOCK_KV * (float)speed_right;
+	
+	/* 综合输出 = 位置P + 位置D + 速度阻尼 */
+	float output_left = p_left + LOCK_KD * d_error_left + velocity_damping_left;
+	float output_right = p_right + LOCK_KD * d_error_right + velocity_damping_right;
+	
+	/* 输出限幅 */
+	if(output_left > LOCK_OUTPUT_MAX) output_left = LOCK_OUTPUT_MAX;
+	if(output_left < -LOCK_OUTPUT_MAX) output_left = -LOCK_OUTPUT_MAX;
+	if(output_right > LOCK_OUTPUT_MAX) output_right = LOCK_OUTPUT_MAX;
+	if(output_right < -LOCK_OUTPUT_MAX) output_right = -LOCK_OUTPUT_MAX;
+	
+	/* 更新历史误差 */
+	g_lock_last_error_left = error_left;
+	g_lock_last_error_right = error_right;
+	
+	/* 应用到电机 */
+	Motor_SetSpeedWithDirection(MOTOR_L, output_left);
+	Motor_SetSpeedWithDirection(MOTOR_R, output_right);
 }
 

@@ -1,0 +1,45 @@
+# KEIL5 编译生成文件
+*.axf
+*.hex
+*.elf
+*.bin
+*.lst
+*.o
+*.obj
+*.crf
+*.lnp
+*.plg
+*.rsp
+*.sct
+*.dep
+*.bak
+*.tmp
+*.err
+*.uvoptx
+*.uvguix.*
+*.htm
+*.map
+*.tra
+*.dep
+*.crf
+*.lnp
+*.axf
+
+# KEIL5 输出目录
+Objects/
+Listings/
+Output/
+build/
+Debug/
+Release/
+
+# VS Code 配置文件（可选，如果你不想同步编辑器配置）
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json  # 如果需要同步特定配置，可保留这行并删除不需要的
+
+# 其他临时文件
+*.log
+*.cache
+.DS_Store  # Mac系统临时文件
+Thumbs.db  # Windows系统临时文件
