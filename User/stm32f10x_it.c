@@ -146,6 +146,11 @@ extern uint16_t uart_rev_tiem;
 extern uint8_t star_car;
 extern volatile uint8_t g_bt_key_control_mode;
 
+// 偏航角（Z轴积分），单位：度，供状态机使用
+// 使用方法：extern volatile float g_yaw_angle; 然后直接读取，即为角度值
+// 清零方法：g_yaw_angle = 0;
+volatile float g_yaw_angle = 0.0f;
+
 // 看门狗变量：检测主循环是否正常运行
 volatile uint32_t g_main_loop_watchdog = 0;
 #define MAIN_LOOP_TIMEOUT_MS  500  // 主循环超过500ms没响应则认为卡死
@@ -170,6 +175,19 @@ void SysTick_Handler(void)
 //	// 更新旧的角度计算（用于兼容性，使用转换后的角速度）
 	add_angle += LSE6DSR_data.gy_rads * dt;  // 使用弧度/秒，正确积分
 	add_angle_num += 1.0f;
+	
+	// 偏航角积分（Z轴），供状态机使用
+	// 带死区滤波防止静止时漂移，单位：度
+	#define GYRO_DEADZONE_RAD  0.003f  // 死区阈值：约0.17 deg/s
+	#define RAD_TO_DEG  57.2957795f
+	{
+		float gz_filtered = LSE6DSR_data.gz_rads;
+		if(gz_filtered > -GYRO_DEADZONE_RAD && gz_filtered < GYRO_DEADZONE_RAD)
+		{
+			gz_filtered = 0.0f;
+		}
+		g_yaw_angle += gz_filtered * dt * RAD_TO_DEG;  // 直接转换为度
+	}
 	
 	// 保留旧的姿态解算调用（可选，用于对比）
 //	prepare_data();

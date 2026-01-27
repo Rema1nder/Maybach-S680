@@ -335,14 +335,12 @@ void LSM6DSR_ConvertToPhysics(LSM6DSR_DATA_T *physics)
 	physics->ay_g = (float)physics->ay / 16384.0f;
 	physics->az_g = (float)physics->az / 16384.0f;
 	
-	// 角速度转换为弧度每秒：±2000dps量程
-	// 根据LSM6DSR数据手册，敏感度 = 70 MLSB/(°/s)0.07
-	// 转换步骤：
-	//   1. 度/秒 = 原始值 / 14.3f
-	//   2. 弧度/秒 = 度/秒 × (π/180)
-	const float GYRO_LSB_TO_RAD_PER_SEC = 1637.022271802352025f;  
-	physics->gx_rads = ((float)physics->gx - 3.519f) / GYRO_LSB_TO_RAD_PER_SEC;
-	physics->gy_rads = ((float)physics->gy  + 12.03f)/ GYRO_LSB_TO_RAD_PER_SEC;
-	physics->gz_rads = ((float)physics->gz + 3.205f)/ GYRO_LSB_TO_RAD_PER_SEC;
+// 角速度转换为弧度每秒：±1000dps量程 (CTRL2_G=0x58)
+	// 根据LSM6DSR数据手册，±1000dps灵敏度 = 35 mdps/LSB = 0.035 dps/LSB
+	// 转换公式：rad/s = 原始值 × 0.035 × (π/180) = 原始值 / 1637.02
+	const float GYRO_LSB_TO_RAD_PER_SEC = 1637.022271802352025f;  // 1 / (0.035 * π/180)
+	physics->gx_rads = ((float)physics->gx - 13.344f) / GYRO_LSB_TO_RAD_PER_SEC;
+	physics->gy_rads = ((float)physics->gy + 16.204f) / GYRO_LSB_TO_RAD_PER_SEC;
+	physics->gz_rads = ((float)physics->gz + 5.056f) / GYRO_LSB_TO_RAD_PER_SEC;
 }
 

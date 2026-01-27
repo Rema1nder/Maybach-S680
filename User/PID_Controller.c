@@ -11,6 +11,7 @@
 #include "LSM6DSR_Config.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /* ========================================================================== */
 /*                              外部变量引用                                   */
