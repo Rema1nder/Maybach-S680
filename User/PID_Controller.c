@@ -56,15 +56,21 @@ static int32_t g_lock_target_left = 0;         /* 左轮锁定目标位置 */
 static int32_t g_lock_target_right = 0;        /* 右轮锁定目标位置 */
 static float g_lock_last_error_left = 0.0f;    /* 锁定PD历史误差 */
 static float g_lock_last_error_right = 0.0f;
+static float g_lock_integral_left = 0.0f;      /* 锁定积分项 (抵抗重力) */
+static float g_lock_integral_right = 0.0f;
 static uint8_t g_lock_stable_count = 0;        /* 稳定计数器 (用于刹车阶段) */
+static uint16_t g_lock_brake_timeout = 0;      /* 刹车超时计数器 */
 
-/* 锁定PID参数 - 优化后防止振荡 */
-#define LOCK_KP           4.0f      /* 位置误差比例系数 (降低以减少超调) */
+/* 锁定PID参数 - 带积分项以抵抗重力 */
+#define LOCK_KP           8.0f      /* 位置误差比例系数 (降低以减少过冲) */
+#define LOCK_KI           0.3f      /* 位置误差积分系数 (消除重力导致的稳态误差) */
 #define LOCK_KD           1.0f      /* 位置误差微分系数 */
-#define LOCK_KV           80.0f     /* 速度阻尼系数 (直接用速度反馈抑制振荡) */
-#define LOCK_OUTPUT_MAX   6000.0f   /* 锁定PWM输出上限 (增大以提供更大锁定力) */
-#define LOCK_DEADZONE     5         /* 位置死区 (增大以减少微小调整) */
+#define LOCK_KV           100.0f    /* 速度阻尼系数 (增大以抑制振荡) */
+#define LOCK_OUTPUT_MAX   8000.0f   /* 锁定PWM输出上限 */
+#define LOCK_INTEGRAL_MAX 8000.0f   /* 积分限幅 (增大以抵抗重力) */
+#define LOCK_DEADZONE     100       /* 位置死区 (增大以覆盖齿轮间隙) */
 #define LOCK_BRAKE_SPEED_TH  8      /* 刹车阶段速度阈值 (低于此值认为已停止) */
+#define LOCK_BRAKE_TIMEOUT  100     /* 刹车超时计数 (防止在墙上永远不能进入锁定) */
 
 /* ========================================================================== */
 /*                           速度环 PID 实现                                   */
@@ -152,9 +158,11 @@ float SpeedPID_Step(SpeedPID_Controller_t *controller, float target_speed, float
 	/* 更新历史状态 */
 	controller->last_error = error;
 	
-	/* 累积值限幅: 防止长时间运行后积分项过大 */
-	if(pid_component > 3500.0f) pid_component = 3500.0f;
-	if(pid_component < -3500.0f) pid_component = -3500.0f;
+	/* 累积值限幅: 使用 output_max 的一定比例，而非硬编码值
+	 * 爬墙时需要更大的 PID 累积输出来克服重力负载 */
+	float pid_accum_limit = controller->param.output_max * 0.9f;  /* 允许 PID 累积到 output_max 的 90% */
+	if(pid_component > pid_accum_limit) pid_component = pid_accum_limit;
+	if(pid_component < -pid_accum_limit) pid_component = -pid_accum_limit;
 	controller->last_output = pid_component;
 
 	/* 前馈补偿: 加速目标跟踪响应 */
@@ -656,6 +664,7 @@ void WheelLock_Enable(void)
 		g_wheel_lock_braking = 1;
 		g_wheel_lock_enabled = 1;
 		g_lock_stable_count = 0;
+		g_lock_brake_timeout = 0;  /* 重置刹车超时计数器 */
 		Motor_Enable();
 		return;
 	}
@@ -664,9 +673,11 @@ void WheelLock_Enable(void)
 	g_lock_target_left = left_ecoder_cnt;
 	g_lock_target_right = right_ecoder_cnt;
 	
-	/* 清除历史误差 */
+	/* 清除历史误差和积分项 */
 	g_lock_last_error_left = 0.0f;
 	g_lock_last_error_right = 0.0f;
+	g_lock_integral_left = 0.0f;
+	g_lock_integral_right = 0.0f;
 	
 	/* 使能锁定，跳过刹车阶段 */
 	g_wheel_lock_braking = 0;
@@ -720,18 +731,24 @@ void WheelLock_Update(void)
 		Motor_SetSpeedWithDirection(MOTOR_L, brake_left);
 		Motor_SetSpeedWithDirection(MOTOR_R, brake_right);
 		
-		/* 检查速度是否已经足够低 */
-		if(abs(speed_left) <= LOCK_BRAKE_SPEED_TH && abs(speed_right) <= LOCK_BRAKE_SPEED_TH)
+		/* 刹车超时计数 */
+		g_lock_brake_timeout++;
+		
+		/* 检查速度是否已经足够低，或者刹车超时 */
+		if((abs(speed_left) <= LOCK_BRAKE_SPEED_TH && abs(speed_right) <= LOCK_BRAKE_SPEED_TH) ||
+		   g_lock_brake_timeout >= LOCK_BRAKE_TIMEOUT)
 		{
 			g_lock_stable_count++;
-			/* 连续多次检测到低速，确认已停止 (约50ms) */
-			if(g_lock_stable_count >= 25)
+			/* 连续多次检测到低速或超时，进入锁定 (约10ms) */
+			if(g_lock_stable_count >= 5)
 			{
 				/* 刹车完成，记录当前位置作为锁定目标 */
 				g_lock_target_left = left_ecoder_cnt;
 				g_lock_target_right = right_ecoder_cnt;
 				g_lock_last_error_left = 0.0f;
 				g_lock_last_error_right = 0.0f;
+				g_lock_integral_left = 0.0f;
+				g_lock_integral_right = 0.0f;
 				g_wheel_lock_braking = 0;  /* 退出刹车阶段，进入锁定保持 */
 			}
 		}
@@ -742,20 +759,45 @@ void WheelLock_Update(void)
 		return;
 	}
 	
-	/* ====== 锁定保持阶段: 位置PD + 速度阻尼 ====== */
+	/* ====== 锁定保持阶段: 位置PID + 速度阻尼 ====== */
 	
 	/* 计算位置误差 */
 	float error_left = (float)(g_lock_target_left - left_ecoder_cnt);
 	float error_right = (float)(g_lock_target_right - right_ecoder_cnt);
 	
-	/* 死区处理 */
+	/* P项 (死区处理) */
 	float p_left = 0.0f, p_right = 0.0f;
 	if(fabsf(error_left) >= LOCK_DEADZONE)
 		p_left = LOCK_KP * error_left;
 	if(fabsf(error_right) >= LOCK_DEADZONE)
 		p_right = LOCK_KP * error_right;
 	
-	/* PD控制计算 */
+	/* I项 (只在死区外累积，死区内缓慢衰减) */
+	if(fabsf(error_left) >= LOCK_DEADZONE)
+	{
+		g_lock_integral_left += error_left;
+	}
+	else
+	{
+		/* 死区内: 积分缓慢衰减但不清零 (保留一部分以抵抗重力) */
+		g_lock_integral_left *= 0.995f;
+	}
+	if(fabsf(error_right) >= LOCK_DEADZONE)
+	{
+		g_lock_integral_right += error_right;
+	}
+	else
+	{
+		g_lock_integral_right *= 0.995f;
+	}
+	if(g_lock_integral_left > LOCK_INTEGRAL_MAX) g_lock_integral_left = LOCK_INTEGRAL_MAX;
+	if(g_lock_integral_left < -LOCK_INTEGRAL_MAX) g_lock_integral_left = -LOCK_INTEGRAL_MAX;
+	if(g_lock_integral_right > LOCK_INTEGRAL_MAX) g_lock_integral_right = LOCK_INTEGRAL_MAX;
+	if(g_lock_integral_right < -LOCK_INTEGRAL_MAX) g_lock_integral_right = -LOCK_INTEGRAL_MAX;
+	float i_left = LOCK_KI * g_lock_integral_left;
+	float i_right = LOCK_KI * g_lock_integral_right;
+	
+	/* D项 */
 	float d_error_left = error_left - g_lock_last_error_left;
 	float d_error_right = error_right - g_lock_last_error_right;
 	
@@ -763,9 +805,9 @@ void WheelLock_Update(void)
 	float velocity_damping_left = -LOCK_KV * (float)speed_left;
 	float velocity_damping_right = -LOCK_KV * (float)speed_right;
 	
-	/* 综合输出 = 位置P + 位置D + 速度阻尼 */
-	float output_left = p_left + LOCK_KD * d_error_left + velocity_damping_left;
-	float output_right = p_right + LOCK_KD * d_error_right + velocity_damping_right;
+	/* 综合输出 = 位置P + 位置I + 位置D + 速度阻尼 */
+	float output_left = p_left + i_left + LOCK_KD * d_error_left + velocity_damping_left;
+	float output_right = p_right + i_right + LOCK_KD * d_error_right + velocity_damping_right;
 	
 	/* 输出限幅 */
 	if(output_left > LOCK_OUTPUT_MAX) output_left = LOCK_OUTPUT_MAX;

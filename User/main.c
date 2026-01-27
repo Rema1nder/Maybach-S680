@@ -98,11 +98,14 @@ static float BT_SpeedPercentToTargetSpeed(uint8_t speed_percent)
  * @brief  将速度百分比转换为 PWM 占空比上限
  * @param  speed_percent  速度百分比 (0-100)
  * @return PWM 占空比
+ * @note   速度环需要足够的 PWM 裕量来克服负载达到目标速度，
+ *         因此 duty_cap 应该足够大，让速度环有调节空间
  */
 static uint16_t BT_SpeedPercentToDuty(uint8_t speed_percent)
 {
-	if(speed_percent > 100) speed_percent = 100;
-	return (uint16_t)((MOTOR_DUTY_MAX * (uint32_t)speed_percent) / 100U);
+	if(speed_percent == 0) return 0;
+	/* 只要有目标速度，就给足够大的 PWM 裕量让速度环工作 */
+	return 8000;  /* 与速度环 output_max 一致 */
 }
 
 /**
