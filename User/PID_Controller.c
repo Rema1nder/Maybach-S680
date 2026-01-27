@@ -29,6 +29,10 @@ extern int32_t right_ecoder_cnt;       /* 右轮编码器累积计数 */
 static SpeedPID_Controller_t g_speed_pid_left;
 static SpeedPID_Controller_t g_speed_pid_right;
 
+/* 巡线速度参数 (可通过串口动态调整) */
+static float g_line_speed_base = 80.0f;   /* 基础速度 (默认80) */
+static float g_line_speed_range = 30.0f;  /* 速度变化范围 (默认30) */
+
 /* 位置环控制器 (巡线偏差修正) */
 static PositionPID_Controller_t g_position_pid;
 
@@ -581,7 +585,7 @@ void PID_Control_Update(void)
 
 	/* 根据偏差动态调整基础速度: 偏差越大速度越慢 */
 	float deviation = fabsf(current_position - 7.5f);
-	float i_speed = 80.0f - (fminf(deviation, 3.0f) / 3.0f) * 30.0f;
+	float i_speed = g_line_speed_base - (fminf(deviation, 3.0f) / 3.0f) * g_line_speed_range;
 
 	if(star_car)
 	{
@@ -824,3 +828,50 @@ void WheelLock_Update(void)
 	Motor_SetSpeedWithDirection(MOTOR_R, output_right);
 }
 
+/* ========================================================================== */
+/*                         巡线速度参数接口                                     */
+/* ========================================================================== */
+
+/**
+ * @brief  设置巡线速度参数
+ * @param  base_speed   基础速度 (原先固定为 80)
+ * @param  speed_range  速度变化范围 (原先固定为 30)
+ * @note   公式: i_speed = base_speed - (deviation/3) * speed_range
+ */
+void PID_SetLineSpeedParams(float base_speed, float speed_range)
+{
+	g_line_speed_base = base_speed;
+	g_line_speed_range = speed_range;
+}
+
+/**
+ * @brief  获取巡线速度参数
+ * @param  base_speed   输出: 基础速度
+ * @param  speed_range  输出: 速度变化范围
+ */
+void PID_GetLineSpeedParams(float *base_speed, float *speed_range)
+{
+	if(base_speed) *base_speed = g_line_speed_base;
+	if(speed_range) *speed_range = g_line_speed_range;
+}
+
+/**
+ * @brief  获取当前 PID 运行状态 (用于串口调试)
+ * @param  target_left   输出: 左轮目标速度
+ * @param  target_right  输出: 右轮目标速度
+ * @param  actual_left   输出: 左轮实际速度
+ * @param  actual_right  输出: 右轮实际速度
+ * @param  pwm_left      输出: 左轮 PWM 输出
+ * @param  pwm_right     输出: 右轮 PWM 输出
+ */
+void PID_GetRunStatus(float *target_left, float *target_right, 
+                      int16_t *actual_left, int16_t *actual_right,
+                      float *pwm_left, float *pwm_right)
+{
+	if(target_left) *target_left = g_latest_target_left;
+	if(target_right) *target_right = g_latest_target_right;
+	if(actual_left) *actual_left = speed_left;
+	if(actual_right) *actual_right = speed_right;
+	if(pwm_left) *pwm_left = g_latest_out_left;
+	if(pwm_right) *pwm_right = g_latest_out_right;
+}

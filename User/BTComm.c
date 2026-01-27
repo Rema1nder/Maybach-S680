@@ -4,6 +4,7 @@
 #include "M3PWM.h"
 #include "PID_Controller.h"
 #include "BlackPoint_Finder.h"
+#include "ADC_get.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -551,6 +552,100 @@ static void BT_ParseCommand(const char *cmd)
         return;
     }
     
+    // ADC查询: ?ADC - 返回16路光电管ADC值和黑线检测情况
+    if(strcmp(cmd_part, "?ADC") == 0 || strcmp(cmd_part, "ADC") == 0)
+    {
+        uint8_t black_flags[SENSOR_COUNT];
+        char buf[256];
+        int i;
+        
+        // 获取黑线检测状态
+        BlackPoint_Finder_GetBlackFlags_Dynamic(g_mux_adc_values, black_flags);
+        
+        // 发送ADC值 (分两行发送避免缓冲区溢出)
+        sprintf(buf, "ADC[0-7]:");
+        for(i = 0; i < 8; i++)
+        {
+            char tmp[16];
+            sprintf(tmp, "%d%c", g_mux_adc_values[i], (i < 7) ? ',' : '\n');
+            strcat(buf, tmp);
+        }
+        BT_SendResponse(buf);
+        
+        sprintf(buf, "ADC[8-15]:");
+        for(i = 8; i < 16; i++)
+        {
+            char tmp[16];
+            sprintf(tmp, "%d%c", g_mux_adc_values[i], (i < 15) ? ',' : '\n');
+            strcat(buf, tmp);
+        }
+        BT_SendResponse(buf);
+        
+        // 发送黑线检测状态 (1=黑, 0=白)
+        sprintf(buf, "BLK:");
+        for(i = 0; i < 16; i++)
+        {
+            char tmp[4];
+            sprintf(tmp, "%d", black_flags[i]);
+            strcat(buf, tmp);
+        }
+        strcat(buf, "\r\n");
+        BT_SendResponse(buf);
+        return;
+    }
+    
+    // PID运行状态查询: ?PID - 返回左右轮目标速度、实际速度、PWM输出
+    if(strcmp(cmd_part, "?PID") == 0)
+    {
+        float tgt_l, tgt_r, pwm_l, pwm_r;
+        int16_t act_l, act_r;
+        char buf[128];
+        
+        PID_GetRunStatus(&tgt_l, &tgt_r, &act_l, &act_r, &pwm_l, &pwm_r);
+        
+        sprintf(buf, "TGT:L=%.1f,R=%.1f\r\n", tgt_l, tgt_r);
+        BT_SendResponse(buf);
+        sprintf(buf, "ACT:L=%d,R=%d\r\n", act_l, act_r);
+        BT_SendResponse(buf);
+        sprintf(buf, "PWM:L=%.0f,R=%.0f\r\n", pwm_l, pwm_r);
+        BT_SendResponse(buf);
+        return;
+    }
+    
+    // 巡线速度参数设置: ISPD:base,range - 修改i_speed公式中的80和30
+    if(strcmp(cmd_part, "ISPD") == 0)
+    {
+        float base = 0.0f, range = 0.0f;
+        int args = 0;
+        
+        if(colon)
+        {
+            args = sscanf(colon + 1, "%f,%f", &base, &range);
+        }
+        
+        if(args == 2)
+        {
+            PID_SetLineSpeedParams(base, range);
+            char buf[64];
+            sprintf(buf, "OK:ISPD=%.1f,%.1f\r\n", base, range);
+            BT_SendResponse(buf);
+        }
+        else if(args == 0 || colon == NULL)
+        {
+            // 无参数时查询当前值
+            float cur_base, cur_range;
+            PID_GetLineSpeedParams(&cur_base, &cur_range);
+            char buf[64];
+            sprintf(buf, "ISPD:%.1f,%.1f\r\n", cur_base, cur_range);
+            BT_SendResponse(buf);
+        }
+        else
+        {
+            BT_SendResponse("ERR:ISPD_FMT (use ISPD:base,range)\r\n");
+        }
+        return;
+    }
+    
     // 键控模式开关
     if(strcmp(cmd_part, "KEY") == 0)
     {
@@ -694,6 +789,14 @@ void BT_SetVacuumSpeedDirect(uint8_t speed_percent)
     if(speed_percent > 100) speed_percent = 100;
     g_vacuum_speed = speed_percent;
     g_vacuum_enabled = (speed_percent > 0) ? 1 : 0;
+}
+
+/**
+ * @brief 获取当前设置的负压风扇转速百分比 (0-100)
+ */
+uint8_t BT_GetVacuumSpeed(void)
+{
+    return g_vacuum_speed;
 }
 
 /**

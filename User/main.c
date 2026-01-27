@@ -265,7 +265,13 @@ static void HandleKeyEvent(Key_Event_t *event)
 				PositionPID_ResetState();
 				Odometer_Reset();  /* 重置里程计，以当前位置为坐标原点 */
 				Motor_Enable();
-				M3PWM_SetDutyCycle(200);  /* 启动负压风扇 */
+				/* 负压风扇: 使用蓝牙设置的转速，默认20% */
+				{
+					uint8_t vac_speed = BT_GetVacuumSpeed();
+					if(vac_speed == 0) vac_speed = 20;  /* 默认20% */
+					uint16_t duty = (1000 * vac_speed) / 100;
+					M3PWM_SetDutyCycle(duty);
+				}
 				M3PWM_Start();
 				PID_PositionLoop_Enable(1);
 			}
@@ -363,8 +369,10 @@ int main(void)
 		Key_Scan_Update();
 		BT_Process();
 		
-		/* 读取电池电压 */
-		BDI_V = (float)g_mux_adc_values[16] * 0.003800f;
+		/* 读取电池电压
+		 * 校准说明: 真实7.36V时显示7.76V, 偏高0.4V
+		 * 以低电压(7.4V附近)为基准调整系数: 0.0038 * (7.36/7.76) ≈ 0.00360 */
+		BDI_V = (float)g_mux_adc_values[16] * 0.003605f;
 		
 		/* ====== 低电压警告检测 (带消抖和滞回) ====== */
 		if(BDI_V > 0.5f && BDI_V < LOW_BATTERY_THRESHOLD)

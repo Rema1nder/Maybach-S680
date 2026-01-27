@@ -99,6 +99,11 @@ const BT_State_t* BT_GetState(void);
 void BT_SetVacuumSpeedDirect(uint8_t speed_percent);
 
 /**
+ * @brief 获取当前设置的负压风扇转速百分比 (0-100)
+ */
+uint8_t BT_GetVacuumSpeed(void);
+
+/**
  * @brief 处理键控模式切换（硬件K2直接调用）
  */
 void BT_HandleKeyControlModeChange(uint8_t enabled);

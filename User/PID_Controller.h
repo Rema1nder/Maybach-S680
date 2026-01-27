@@ -259,5 +259,37 @@ uint8_t WheelLock_IsEnabled(void);
  */
 void WheelLock_Update(void);
 
+/* ========================================================================== */
+/*                         巡线速度参数接口                                     */
+/* ========================================================================== */
+
+/**
+ * @brief  设置巡线速度参数 (运行时可调)
+ * @param  base_speed   基础速度 (默认 80, 即 i_speed 公式中的第一个值)
+ * @param  speed_range  速度变化范围 (默认 30, 即偏差最大时的减速量)
+ * @note   公式: i_speed = base_speed - (deviation/3) * speed_range
+ */
+void PID_SetLineSpeedParams(float base_speed, float speed_range);
+
+/**
+ * @brief  获取巡线速度参数
+ * @param  base_speed   输出: 基础速度
+ * @param  speed_range  输出: 速度变化范围
+ */
+void PID_GetLineSpeedParams(float *base_speed, float *speed_range);
+
+/**
+ * @brief  获取当前 PID 运行状态 (用于串口调试)
+ * @param  target_left   输出: 左轮目标速度
+ * @param  target_right  输出: 右轮目标速度
+ * @param  actual_left   输出: 左轮实际速度
+ * @param  actual_right  输出: 右轮实际速度
+ * @param  pwm_left      输出: 左轮 PWM 输出
+ * @param  pwm_right     输出: 右轮 PWM 输出
+ */
+void PID_GetRunStatus(float *target_left, float *target_right, 
+                      int16_t *actual_left, int16_t *actual_right,
+                      float *pwm_left, float *pwm_right);
+
 #endif /* __PID_CONTROLLER_H__ */
 
