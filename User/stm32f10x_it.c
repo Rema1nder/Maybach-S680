@@ -33,6 +33,7 @@
 #include "BlackPoint_Finder.h"
 #include "PID_Controller.h"
 #include "M3PWM.h"
+#include "Odometer.h"
 
 /** @addtogroup STM32F10x_StdPeriph_Template
   * @{
@@ -194,6 +195,7 @@ void SysTick_Handler(void)
 //	imuupdate(&gyr_rad, &acc_g, &att_angle);
 	
   ABEncoder_UpdateSpeed();
+  Odometer_Update();  /* 更新里程计数据，必须在编码器更新之后 */
   MuxADC_SampleAll();
   if(!g_bt_key_control_mode && PID_PositionLoop_IsEnabled())
   {

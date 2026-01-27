@@ -29,6 +29,7 @@
 #include "system_stm32f10x.h"
 #include "BlackPoint_Finder.h"
 #include "PID_Controller.h"
+#include "Odometer.h"
 
 /* ========================================================================== */
 /*                              外部变量引用                                   */
@@ -259,6 +260,7 @@ static void HandleKeyEvent(Key_Event_t *event)
 				g_lose_time = 0;  /* 清零丢线计数 */
 				SpeedPID_ResetState();
 				PositionPID_ResetState();
+				Odometer_Reset();  /* 重置里程计，以当前位置为坐标原点 */
 				Motor_Enable();
 				M3PWM_SetDutyCycle(200);  /* 启动负压风扇 */
 				M3PWM_Start();
@@ -343,6 +345,7 @@ int main(void)
 	Uart2_Init(115200);
 	BT_Init();
 	PID_Init();
+	Odometer_Init();  /* 初始化里程计模块 */
 	
 	/* ====== 初始状态: 等待按键启动 ====== */
 	PID_PositionLoop_Enable(0);

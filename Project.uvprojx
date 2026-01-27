@@ -814,6 +814,16 @@
               <FileType>5</FileType>
               <FilePath>.\User\BTComm.h</FilePath>
             </File>
+            <File>
+              <FileName>Odometer.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\User\Odometer.c</FilePath>
+            </File>
+            <File>
+              <FileName>Odometer.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\User\Odometer.h</FilePath>
+            </File>
           </Files>
         </Group>
       </Groups>
