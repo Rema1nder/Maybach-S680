@@ -8,6 +8,7 @@
 #include "RGB_Led.h"
 #include "Odometer.h"
 #include "ABEncoder.h"
+#include "CircleHandler.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -25,12 +26,12 @@ static Motion_Mode_t g_motion_mode = MOTION_IDLE;
 static uint8_t g_motion_speed = 0;        // 当前运动速度 0-100
 static uint8_t g_base_speed = 30;         // 基础速度（默认30%）
 static uint8_t g_vacuum_enabled = 0;      // 吸盘是否启用
-static uint8_t g_vacuum_speed = 20;       // 吸盘转速 0-100
+static uint8_t g_vacuum_speed = 0;       // 吸盘转速 0-100
 static uint8_t g_key_control_mode = 0;    // 键控模式标志 0=OFF, 1=ON
 static uint8_t g_emergency_stop = 0;      // 急停标志 0=正常, 1=急停
 
 /*=== 吸盘默认转速配置 ===*/
-#define VACUUM_DEFAULT_SPEED  20          // 吸盘默认转速百分比
+#define VACUUM_DEFAULT_SPEED  0          // 吸盘默认转速百分比
 
 /**
  * @brief 初始化蓝牙通信模块
@@ -69,6 +70,9 @@ void BT_EmergencyStop(void)
     star_car = 0;
     g_bt_key_control_mode = 0;
     g_key_control_mode = 0;
+    
+    // 重置圆环状态机
+    Circle_Reset();
     
     // 禁用轮子锁定
     WheelLock_Disable();

@@ -5,11 +5,11 @@
 static SensorConfig_t sensor_config[SENSOR_COUNT];
 
 // 传感器独立阈值 (Min_White + Max_Black) / 2
-// 全白: 429,465,432,464,389,449,388,451,390,361,390,357,394,421,377,420
-// 全黑: 349,347,273,338,281,286,325,337,296,284,373,263,313,289,292,345
+// 全白: 529,491,532,562,651,611,572,605,579,524,587,552,553,506,530,534
+// 全黑: 376,307,312,317,355,364,344,377,353,316,368,352,341,303,341,340
 static const uint16_t SENSOR_THRESHOLDS[SENSOR_COUNT] = {
-    389, 406, 352, 401, 335, 367, 356, 394,
-    343, 322, 381, 310, 353, 355, 334, 382
+    452, 399, 422, 439, 503, 487, 458, 491,
+    466, 420, 477, 452, 447, 404, 435, 437
 };
 
 // 状态记录用于迟滞 (0=White, 1=Black)
@@ -309,5 +309,143 @@ void BlackPoint_Finder_SetSimulateChannels(const uint8_t *channels, uint8_t coun
 volatile uint16_t* BlackPoint_Finder_GetSimulateADC(void)
 {
 	return g_simulate_adc;
+}
+
+/* ========================================================================== */
+/*                          路口/圆环检测辅助函数                               */
+/* ========================================================================== */
+
+/**
+ * @brief  分析当前传感器帧的路口特征
+ */
+void BlackPoint_Finder_AnalyzeJunction(volatile uint16_t *adc_values, JunctionInfo_t *info)
+{
+	uint8_t i;
+	uint8_t black_flags[SENSOR_COUNT];
+	uint8_t black_count = 0;
+	uint8_t seg_count = 0;
+	uint8_t in_segment = 0;
+	uint8_t left_count = 0;
+	uint8_t right_count = 0;
+	
+	if(adc_values == NULL || info == NULL) return;
+	
+	/* 获取所有传感器黑白状态 */
+	BlackPoint_Finder_GetBlackFlags_Dynamic(adc_values, black_flags);
+	
+	/* 统计黑点数量和线段数量 */
+	for(i = 0; i < SENSOR_COUNT; i++)
+	{
+		if(black_flags[i])
+		{
+			black_count++;
+			if(!in_segment)
+			{
+				seg_count++;
+				in_segment = 1;
+			}
+			/* 左半侧: 0~6, 右半侧: 9~15 */
+			if(i <= 6) left_count++;
+			if(i >= 9) right_count++;
+		}
+		else
+		{
+			in_segment = 0;
+		}
+	}
+	
+	/* 统计中间区域 (6~9) */
+	{
+		uint8_t center_count = 0;
+		uint8_t ci;
+		for(ci = 6; ci <= 9; ci++)
+		{
+			if(black_flags[ci]) center_count++;
+		}
+		info->center_has_line = (center_count >= 1) ? 1 : 0;
+	}
+	
+	info->black_count = black_count;
+	info->seg_count = seg_count;
+	info->left_has_line = (left_count >= 2) ? 1 : 0;
+	info->right_has_line = (right_count >= 2) ? 1 : 0;
+	
+	/* 路口判定: 黑点数 >= 6 或出现两段以上分离的黑线 */
+	info->is_junction = (black_count >= 6 || seg_count >= 2) ? 1 : 0;
+	
+	/* 十字判定: 路口 + 左右两侧都有线 + 中间有线 */
+	info->is_cross = (info->is_junction && info->left_has_line && info->right_has_line && info->center_has_line) ? 1 : 0;
+}
+
+/**
+ * @brief  半侧追线：只取指定半侧传感器的加权中心
+ */
+float BlackPoint_Finder_SearchHalf(volatile uint16_t *adc_values, uint8_t side, BlackPointResult_t *result)
+{
+	uint8_t i;
+	uint8_t start_idx, end_idx;
+	float pos_sum = 0.0f;
+	float weight_sum = 0.0f;
+	uint8_t black_count = 0;
+	float precise_pos;
+	
+	if(adc_values == NULL || result == NULL)
+	{
+		if(result != NULL)
+		{
+			result->found = 0;
+			result->position = 7;
+			result->precise_position = 7.5f;
+		}
+		return 7.5f;
+	}
+	
+	if(side == 0)
+	{
+		start_idx = 0;
+		end_idx = 8;    /* 左半侧 0~7 */
+	}
+	else
+	{
+		start_idx = 8;
+		end_idx = 16;   /* 右半侧 8~15 */
+	}
+	
+	for(i = start_idx; i < end_idx; i++)
+	{
+		if(BlackPoint_Finder_IsBlackPoint(i, adc_values[i]))
+		{
+			float diff = 0.0f;
+			uint16_t thr = SENSOR_THRESHOLDS[i];
+			if(thr > adc_values[i])
+			{
+				diff = (float)(thr - adc_values[i]);
+			}
+			float weight = 100.0f + diff;
+			pos_sum += (float)i * weight;
+			weight_sum += weight;
+			black_count++;
+		}
+	}
+	
+	if(black_count == 0)
+	{
+		result->found = 0;
+		result->position = last_position;
+		result->precise_position = last_precise_position;
+		return last_precise_position;
+	}
+	
+	precise_pos = pos_sum / weight_sum;
+	if(precise_pos < 0.0f) precise_pos = 0.0f;
+	if(precise_pos > (float)(SENSOR_COUNT - 1)) precise_pos = (float)(SENSOR_COUNT - 1);
+	
+	result->found = 1;
+	result->position = (uint8_t)(precise_pos + 0.5f);
+	result->precise_position = precise_pos;
+	last_position = result->position;
+	last_precise_position = precise_pos;
+	
+	return precise_pos;
 }
 

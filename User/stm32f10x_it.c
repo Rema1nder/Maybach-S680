@@ -34,6 +34,7 @@
 #include "PID_Controller.h"
 #include "M3PWM.h"
 #include "Odometer.h"
+#include "CircleHandler.h"
 
 /** @addtogroup STM32F10x_StdPeriph_Template
   * @{
@@ -199,41 +200,38 @@ void SysTick_Handler(void)
   MuxADC_SampleAll();
   if(!g_bt_key_control_mode && PID_PositionLoop_IsEnabled())
   {
-    // 检查是否为模拟模式
-    if(BlackPoint_Finder_IsSimulateMode())
-    {
-      // 使用模拟ADC值进行黑点搜索
-      BlackPoint_Finder_Search(BlackPoint_Finder_GetSimulateADC(), &result_BlackPoint);
-    }
-    else
-    {
-      // 正常模式：使用真实ADC值
-      BlackPoint_Finder_Search(g_mux_adc_values, &result_BlackPoint);
-    }
+    volatile uint16_t *adc_src = BlackPoint_Finder_IsSimulateMode() 
+                                 ? BlackPoint_Finder_GetSimulateADC() 
+                                 : g_mux_adc_values;
     
-    if(result_BlackPoint.found)
+    /* 圆环状态机更新 (在正常搜索之前) */
+    Circle_Update(adc_src);
+    
+    /* 圆环 ENTERING/EXITING 阶段已在 Circle_Update 中设置了 position_get,
+     * 跳过正常的全幅搜索; NORMAL/IN_CIRCLE 阶段走正常流程 */
+    if(Circle_GetState() == CIRCLE_STATE_NORMAL || 
+       Circle_GetState() == CIRCLE_STATE_IN_CIRCLE)
     {
-      position_get = result_BlackPoint.precise_position * 10.0f;
-      if(g_lose_time > 0)
+      BlackPoint_Finder_Search(adc_src, &result_BlackPoint);
+      
+      if(result_BlackPoint.found)
       {
-        g_lose_time--;
+        position_get = result_BlackPoint.precise_position * 10.0f;
+        if(g_lose_time > 0)
+        {
+          g_lose_time--;
+        }
       }
-    }
-    else
-    {
-      g_lose_time ++;
-      // 这里的 lose_time 计数频率 = SysTick频率(500Hz)
-      // 50 * 2ms = 100ms 超时停机 (原先是500 -> 1s)
-      if(g_lose_time > 250) 
+      else
       {
-        g_lose_time = 50;
-        Motor_Disable();
-        Motor_StopAll(); // 确保 PWM 也置 0
-        SpeedPID_ResetState(); // 确保 PID 复位
-        // 关键修改：丢线后不退出 star_car 模式，不关风扇，不关灯
-        // 保持 star_car = 1，风扇继续转，等待用户手动按 K1 退出
-        // star_car = 0; 
-        // RGB_SetColor(RGB_COLOR_OFF); 
+        g_lose_time ++;
+        if(g_lose_time > 250) 
+        {
+          g_lose_time = 50;
+          Motor_Disable();
+          Motor_StopAll();
+          SpeedPID_ResetState();
+        }
       }
     }
   }

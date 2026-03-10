@@ -30,6 +30,7 @@
 #include "BlackPoint_Finder.h"
 #include "PID_Controller.h"
 #include "Odometer.h"
+#include "CircleHandler.h"
 
 /* ========================================================================== */
 /*                              外部变量引用                                   */
@@ -254,6 +255,7 @@ static void HandleKeyEvent(Key_Event_t *event)
 				M3PWM_SetDutyCycle(0);  /* 停止负压风扇 */
 				PID_PositionLoop_Enable(0);
 				SpeedPID_ResetState();
+				Circle_Reset();  /* 重置圆环状态机 */
 				RGB_SetColor(RGB_COLOR_OFF);
 			}
 			else
@@ -272,12 +274,13 @@ static void HandleKeyEvent(Key_Event_t *event)
 				g_lose_time = 0;  /* 清零丢线计数 */
 				SpeedPID_ResetState();
 				PositionPID_ResetState();
+				Circle_Reset();  /* 重置圆环状态机 */
 				Odometer_Reset();  /* 重置里程计，以当前位置为坐标原点 */
 				Motor_Enable();
 				/* 负压风扇: 使用蓝牙设置的转速，默认20% */
 				{
 					uint8_t vac_speed = BT_GetVacuumSpeed();
-					if(vac_speed == 0) vac_speed = 20;  /* 默认20% */
+					if(vac_speed == 0) vac_speed = 0;  /* 默认10% */
 					uint16_t duty = (1000 * vac_speed) / 100;
 					M3PWM_SetDutyCycle(duty);
 				}
@@ -343,6 +346,7 @@ static void HandleKeyEvent(Key_Event_t *event)
 				g_bt_key_control_mode = 0;
 				BT_HandleKeyControlModeChange(0);
 				SpeedPID_ResetState();
+				Circle_Reset();
 				BT_EmergencyStop();
 			}
 			break;
@@ -370,6 +374,7 @@ int main(void)
 	BT_Init();
 	PID_Init();
 	Odometer_Init();  /* 初始化里程计模块 */
+	Circle_Init();    /* 初始化圆环检测模块 */
 	
 	/* ====== 初始状态: 等待按键启动 ====== */
 	PID_PositionLoop_Enable(0);

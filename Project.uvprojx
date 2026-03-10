@@ -824,6 +824,16 @@
               <FileType>5</FileType>
               <FilePath>.\User\Odometer.h</FilePath>
             </File>
+            <File>
+              <FileName>CircleHandler.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\User\CircleHandler.c</FilePath>
+            </File>
+            <File>
+              <FileName>CircleHandler.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\User\CircleHandler.h</FilePath>
+            </File>
           </Files>
         </Group>
       </Groups>

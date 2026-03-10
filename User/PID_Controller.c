@@ -30,8 +30,8 @@ static SpeedPID_Controller_t g_speed_pid_left;
 static SpeedPID_Controller_t g_speed_pid_right;
 
 /* 巡线速度参数 (可通过串口动态调整) */
-static float g_line_speed_base = 130.0f;   /* 基础速度 (默认130) */
-static float g_line_speed_range = 30.0f;  /* 速度变化范围 (默认30) */
+static float g_line_speed_base = 110.0f;   /* 基础速度 (默认130) */
+static float g_line_speed_range = 10.0f;  /* 速度变化范围 (默认30) */
 
 /* 位置环控制器 (巡线偏差修正) */
 static PositionPID_Controller_t g_position_pid;

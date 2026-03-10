@@ -124,5 +124,38 @@ void BlackPoint_Finder_SetSimulateChannels(const uint8_t *channels, uint8_t coun
  */
 volatile uint16_t* BlackPoint_Finder_GetSimulateADC(void);
 
+/* ========================================================================== */
+/*                          路口/圆环检测辅助函数                               */
+/* ========================================================================== */
+
+/**
+ * @brief 路口检测结果结构体
+ */
+typedef struct {
+	uint8_t is_junction;       /* 是否检测到路口 (黑线异常宽或出现分叉) */
+	uint8_t is_cross;          /* 是否为十字路口 (左右两侧都有线) */
+	uint8_t black_count;       /* 当前帧中检测到的黑点数量 */
+	uint8_t seg_count;         /* 黑线段数 (1=普通线, 2=分叉/路口) */
+	uint8_t left_has_line;     /* 左半侧 (0~6) 是否有黑线 */
+	uint8_t right_has_line;    /* 右半侧 (9~15) 是否有黑线 */
+	uint8_t center_has_line;   /* 中间区域 (6~9) 是否有黑线 */
+} JunctionInfo_t;
+
+/**
+ * @brief  分析当前传感器帧的路口特征
+ * @param  adc_values  ADC 值数组
+ * @param  info        输出路口信息
+ */
+void BlackPoint_Finder_AnalyzeJunction(volatile uint16_t *adc_values, JunctionInfo_t *info);
+
+/**
+ * @brief  半侧追线：只取指定半侧传感器的加权中心
+ * @param  adc_values  ADC 值数组
+ * @param  side        0=左半侧(0~7), 1=右半侧(8~15)
+ * @param  result      输出结果
+ * @return 精确位置 (与 BlackPoint_Finder_Search 一致)
+ */
+float BlackPoint_Finder_SearchHalf(volatile uint16_t *adc_values, uint8_t side, BlackPointResult_t *result);
+
 #endif // __BLACKPOINT_FINDER_H__
 
