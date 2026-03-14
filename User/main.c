@@ -4,7 +4,7 @@
  * @details 实现以下功能:
  *          - K1: 启动/停止巡线模式
  *          - K2: 启动/停止蓝牙遥控模式
- *          - K3: 打印传感器状态 (调试用)
+ *          - K3: 光电管阈值校准 (开始/结束)
  *          - K4: 急停/解除急停
  *          
  *          控制架构:
@@ -228,6 +228,31 @@ static void BT_ApplyMotion(const BT_State_t *state)
 /*                              按键事件处理                                   */
 /* ========================================================================== */
 
+// K1 校准等待标志：已触发陀螺仪校准，校准完成后自动启动巡线
+static uint8_t g_k1_calib_pending = 0;
+
+/**
+ * @brief  校准完成后实际启动巡线的内部函数
+ */
+static void StartLinefollowing(void)
+{
+	RGB_SetColor(RGB_COLOR_G);
+	star_car = 1;
+	g_lose_time = 0;
+	SpeedPID_ResetState();
+	PositionPID_ResetState();
+	Circle_Reset();
+	Odometer_Reset();
+	Motor_Enable();
+	{
+		uint8_t vac_speed = BT_GetVacuumSpeed();
+		uint16_t duty = (1000 * vac_speed) / 100;
+		M3PWM_SetDutyCycle(duty);
+	}
+	M3PWM_Start();
+	PID_PositionLoop_Enable(1);
+}
+
 /**
  * @brief  处理按键事件
  * @param  event  按键事件指针
@@ -260,32 +285,17 @@ static void HandleKeyEvent(Key_Event_t *event)
 			}
 			else
 			{
-				/* 启动巡线 - 自动清除急停状态 */
+				/* 启动巡线：先静止 2s 完成动态零漂校准，再自动进入巡线 */
 				if(BT_IsEmergencyStopped())
-				{
 					BT_ClearEmergencyStop();
-				}
-				
-				/* 禁用轮子锁定 (可能从键控模式切换过来) */
 				WheelLock_Disable();
-				
-				RGB_SetColor(RGB_COLOR_G);
-				star_car = 1;
-				g_lose_time = 0;  /* 清零丢线计数 */
-				SpeedPID_ResetState();
-				PositionPID_ResetState();
-				Circle_Reset();  /* 重置圆环状态机 */
-				Odometer_Reset();  /* 重置里程计，以当前位置为坐标原点 */
-				Motor_Enable();
-				/* 负压风扇: 使用蓝牙设置的转速，默认20% */
-				{
-					uint8_t vac_speed = BT_GetVacuumSpeed();
-					if(vac_speed == 0) vac_speed = 0;  /* 默认10% */
-					uint16_t duty = (1000 * vac_speed) / 100;
-					M3PWM_SetDutyCycle(duty);
-				}
-				M3PWM_Start();
-				PID_PositionLoop_Enable(1);
+
+				/* LED 黄色提示：正在校准，请保持小车静止 */
+				RGB_SetColor(RGB_COLOR_YELLOW);
+				g_k1_calib_pending = 1;
+				/* 1000 次采样 × 2ms = 2s */
+				LSM6DSR_StartCalibration(1000);
+				printf("[CALIB] Gyro calibrating, keep still 2s...\r\n");
 			}
 			break;
 
@@ -324,9 +334,22 @@ static void HandleKeyEvent(Key_Event_t *event)
 			}
 			break;
 
-		/* K3: 打印电池电压 */
+		/* K3: 光电管阈值校准 (第一次按下开始，第二次按下结束) */
 		case KEY_K3:
-			printf("Battery Voltage: %.2fV\r\n", BDI_V);
+			if(BlackPoint_Finder_IsCalibrating())
+			{
+				/* 结束校准，计算并应用阈值 */
+				BlackPoint_Finder_EndCalib();
+				RGB_SetColor(RGB_COLOR_G);
+				Delay_ms(500);
+				RGB_SetColor(RGB_COLOR_OFF);
+			}
+			else
+			{
+				/* 开始校准，黄灯提示 */
+				BlackPoint_Finder_StartCalib();
+				RGB_SetColor(RGB_COLOR_YELLOW);
+			}
 			break;
 
 		/* K4: 急停/解除急停 */
@@ -340,7 +363,8 @@ static void HandleKeyEvent(Key_Event_t *event)
 			}
 			else
 			{
-				/* 触发急停 */
+				/* 触发急停，同时取消待定的陀螺仪校准 */
+				g_k1_calib_pending = 0;
 				RGB_SetColor(RGB_COLOR_R);
 				star_car = 0;
 				g_bt_key_control_mode = 0;
@@ -456,6 +480,20 @@ int main(void)
 		if(event != NULL)
 		{
 			HandleKeyEvent(event);
+		}
+
+		/* 光电管校准模式：每帧喚入 ADC 数据 */
+		if(BlackPoint_Finder_IsCalibrating())
+		{
+			BlackPoint_Finder_UpdateCalib(g_mux_adc_values);
+		}
+
+		/* 陀螺仪校准完成后自动启动巡线 */
+		if(g_k1_calib_pending && !LSM6DSR_IsCalibrating())
+		{
+			g_k1_calib_pending = 0;
+			printf("[CALIB] Done. Starting line-following.\r\n");
+			StartLinefollowing();
 		}
 
 		/* 蓝牙遥控模式: 应用运动指令 */

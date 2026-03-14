@@ -9,6 +9,7 @@
 #include "Odometer.h"
 #include "ABEncoder.h"
 #include "CircleHandler.h"
+#include "LSM6DSR_Config.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -32,7 +33,59 @@ static uint8_t g_emergency_stop = 0;      // 急停标志 0=正常, 1=急停
 
 /*=== 吸盘默认转速配置 ===*/
 #define VACUUM_DEFAULT_SPEED  0          // 吸盘默认转速百分比
+/*=== 陀螺仪数据流状态机 ===*/
+typedef enum {
+    GYRO_STREAM_IDLE = 0,
+    GYRO_STREAM_CALIBRATING,
+    GYRO_STREAM_STREAMING
+} GyroStream_State_t;
 
+static volatile GyroStream_State_t g_gyro_stream_state    = GYRO_STREAM_IDLE;
+static volatile uint8_t            g_gyro_calib_done_flag = 0; /* SysTick置位，主循环消费 */
+static volatile uint8_t            g_gyro_stream_send_flag= 0; /* 10Hz定时置位，主循环消费 */
+
+/*=== 光电管数据流状态机 ===*/
+static volatile uint8_t g_lsen_stream_active    = 0; /* 1=流式输出激活 */
+static volatile uint8_t g_lsen_stream_send_flag = 0; /* SysTick置位，主循环消费 */
+
+/**
+ * @brief  陀螺仪流状态机心跳（在 SysTick 中以 2ms 周期调用）
+ * @note   仅更新标志位，不执行任何 UART 发送；实际发送在主循环 BT_Process 中完成
+ */
+void BT_GyroStream_Tick(void)
+{
+    static uint16_t s_tick = 0;
+
+    if(g_gyro_stream_state == GYRO_STREAM_CALIBRATING)
+    {
+        if(!LSM6DSR_IsCalibrating())
+        {
+            g_gyro_stream_state   = GYRO_STREAM_STREAMING;
+            g_gyro_calib_done_flag = 1;
+            s_tick = 0;
+        }
+    }
+
+    if(g_gyro_stream_state == GYRO_STREAM_STREAMING)
+    {
+        if(++s_tick >= 100U)   /* 100 × 2ms = 200ms = 5 Hz */
+        {
+            s_tick = 0;
+            g_gyro_stream_send_flag = 1;
+        }
+    }
+
+    /* 光电管流：5 Hz，与陀螺仪同周期（100 × 2ms = 200ms） */
+    if(g_lsen_stream_active)
+    {
+        static uint16_t s_lsen_tick = 0;
+        if(++s_lsen_tick >= 100U)
+        {
+            s_lsen_tick = 0;
+            g_lsen_stream_send_flag = 1;
+        }
+    }
+}
 /**
  * @brief 初始化蓝牙通信模块
  */
@@ -438,6 +491,47 @@ static void BT_ParseCommand(const char *cmd)
         return;
     }
 
+    // 陀螺仪零漂校准并开始数据流: GCAL
+    // 小车保持静止 2s，校准完成后以 5Hz 打印 yaw/gz_filtered/gz_raw
+    if(strcmp(cmd_part, "GCAL") == 0)
+    {
+        g_gyro_stream_state     = GYRO_STREAM_CALIBRATING;
+        g_gyro_calib_done_flag  = 0;
+        g_gyro_stream_send_flag = 0;
+        LSM6DSR_StartCalibration(1000);   /* 1000 × 2ms = 2 s */
+        BT_SendResponse("GYRO:CAL\r\n");
+        return;
+    }
+
+    // 停止陀螺仪数据流: GSTOP
+    if(strcmp(cmd_part, "GSTOP") == 0)
+    {
+        g_gyro_stream_state     = GYRO_STREAM_IDLE;
+        g_gyro_stream_send_flag = 0;
+        BT_SendResponse("GYRO:STOP\r\n");
+        return;
+    }
+
+    // 光电管16路数据流开始: LSEN
+    // 立即回复 OK:LSEN，之后每 200ms 以 5Hz 输出一帧
+    // 帧格式: BLK:xxxxxxxxxxxxxxxx  (16字符, 1=黑, 0=白)
+    if(strcmp(cmd_part, "LSEN") == 0)
+    {
+        g_lsen_stream_active    = 1;
+        g_lsen_stream_send_flag = 0;
+        BT_SendResponse("OK:LSEN\r\n");
+        return;
+    }
+
+    // 停止光电管数据流: LSTOP
+    if(strcmp(cmd_part, "LSTOP") == 0)
+    {
+        g_lsen_stream_active    = 0;
+        g_lsen_stream_send_flag = 0;
+        BT_SendResponse("LSEN:STOP\r\n");
+        return;
+    }
+
     // PID参数设置：PID:kp,ki,kd[,kf]
     if(strcmp(cmd_part, "PID") == 0)
     {
@@ -590,6 +684,16 @@ static void BT_ParseCommand(const char *cmd)
     if(strcmp(cmd_part, "?STATUS") == 0 || strcmp(cmd_part, "STATUS") == 0 || strcmp(cmd_part, "?") == 0)
     {
         BT_HandleQueryStatus();
+        return;
+    }
+    
+    // 电池电压查询: BATV
+    if(strcmp(cmd_part, "BATV") == 0)
+    {
+        extern float BDI_V;
+        char buf[32];
+        sprintf(buf, "BATV:%.2fV\r\n", BDI_V);
+        BT_SendResponse(buf);
         return;
     }
     
@@ -835,9 +939,11 @@ static void BT_ParseCommand(const char *cmd)
     if(strcmp(cmd_part, "HELP") == 0 || strcmp(cmd_part, "H") == 0)
     {
         BT_SendResponse("=== BT Commands ===\r\n");
-        BT_SendResponse("Global: ESTOP,CLR,VON,VOFF,VS:xx,SPD:xx,?\r\n");
+        BT_SendResponse("Global: ESTOP,CLR,VON,VOFF,VS:xx,SPD:xx,BATV,?\r\n");
         BT_SendResponse("KeyCtrl: FWD,BWD,TL,TR,STOP (or W,S,A,D,X)\r\n");
         BT_SendResponse("KEY:1=Enter KeyMode, KEY:0=Exit\r\n");
+        BT_SendResponse("Gyro: GCAL=calib+stream, GSTOP=stop\r\n");
+        BT_SendResponse("Sensor: LSEN=16ch 5Hz stream, LSTOP=stop\r\n");
         return;
     }
     
@@ -851,6 +957,40 @@ static void BT_ParseCommand(const char *cmd)
  */
 void BT_Process(void)
 {
+    /* --- 陀螺仪流通知（标志位由 SysTick 中断设置，此处在主循环中处理） --- */
+    if(g_gyro_calib_done_flag)
+    {
+        g_gyro_calib_done_flag = 0;
+        BT_SendResponse("GYRO:DONE\r\n");
+    }
+    if(g_gyro_stream_send_flag)
+    {
+        g_gyro_stream_send_flag = 0;
+        char buf[80];
+        sprintf(buf, "YAW:%.2f,GZF:%.2f,GZR:%.2f\r\n",
+                LSM6DSR_GetYaw(),
+                LSM6DSR_GetGyroZ_DPS(),
+                LSM6DSR_GetRawGyroZ_DPS());
+        BT_SendResponse(buf);
+    }
+
+    /* 光电管数据流帧（5 Hz，每 200ms 一帧） */
+    if(g_lsen_stream_send_flag)
+    {
+        g_lsen_stream_send_flag = 0;
+        uint8_t black_flags[SENSOR_COUNT];
+        BlackPoint_Finder_GetBlackFlags_Dynamic(g_mux_adc_values, black_flags);
+        char buf[24];
+        int i;
+        buf[0] = 'B'; buf[1] = 'L'; buf[2] = 'K'; buf[3] = ':';
+        for(i = 0; i < 16; i++)
+        {
+            buf[4 + i] = black_flags[i] ? '1' : '0';
+        }
+        buf[20] = '\r'; buf[21] = '\n'; buf[22] = '\0';
+        BT_SendResponse(buf);
+    }
+
     // 限制单次处理的最大字节数，避免长时间阻塞主循环
     uint8_t max_bytes = 32;
     uint8_t valid = 0;

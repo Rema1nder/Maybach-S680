@@ -79,6 +79,7 @@ typedef struct
 	PositionPID_Param_t param;  // PID参数
 	float last_error;            // 上一次误差
 	float integral;              // 积分项累积
+	uint8_t first_call;          // 首次调用标志：复位后跳过微分冲击
 } PositionPID_Controller_t;
 
 // ==================== 速度环PID函数 ====================

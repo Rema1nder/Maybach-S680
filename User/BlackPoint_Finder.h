@@ -119,6 +119,30 @@ uint8_t BlackPoint_Finder_IsSimulateMode(void);
 void BlackPoint_Finder_SetSimulateChannels(const uint8_t *channels, uint8_t count);
 
 /**
+ * @brief 开始光电管校准
+ * @note  调用后进入校准模式，每路记录 ADC 最大最小值
+ */
+void BlackPoint_Finder_StartCalib(void);
+
+/**
+ * @brief 检查是否正在校准
+ * @return 1=正在校准, 0=空闲
+ */
+uint8_t BlackPoint_Finder_IsCalibrating(void);
+
+/**
+ * @brief 喂入一帧 ADC 数据更新各路最大最小值（校准期间每帧调用）
+ * @param adc_values: 16路 ADC 值数组
+ */
+void BlackPoint_Finder_UpdateCalib(volatile uint16_t *adc_values);
+
+/**
+ * @brief 结束校准，计算阈值 = (min + max) / 2 并应用
+ * @note  校准结束后迟滞系数自动更新为覆盖范围的 10%（最小 10，最大 50）
+ */
+void BlackPoint_Finder_EndCalib(void);
+
+/**
  * @brief 获取模拟ADC值数组（用于位置环计算）
  * @return 模拟的ADC值数组指针
  */

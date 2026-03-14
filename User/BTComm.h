@@ -133,4 +133,10 @@ void BT_VacuumControl(uint8_t enable);
  */
 void BT_VacuumSetSpeed(uint8_t speed);
 
+/**
+ * @brief 陀螺仪流状态机心跳（在 SysTick 中以 2ms 周期调用）
+ * @note  仅更新标志位，不执行 UART 发送
+ */
+void BT_GyroStream_Tick(void);
+
 #endif

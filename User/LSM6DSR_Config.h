@@ -71,8 +71,20 @@ typedef struct
 	float gy_rads;  // 角速度 Y轴 (弧度/秒)
 	float gz_rads;  // 角速度 Z轴 (弧度/秒)
 }LSM6DSR_DATA_T;
+
+// 陀螺仪动态校准数据结构体
+typedef struct
+{
+	float gyro_offset_x;   // X轴零漂偏置 (LSB)
+	float gyro_offset_y;   // Y轴零漂偏置 (LSB)
+	float gyro_offset_z;   // Z轴零漂偏置 (LSB)
+	uint8_t calibrated;    // 是否已完成校准 (0=未校准, 1=已校准)
+} LSM6DSR_CALIB_T;
+
 extern LSM6DSR_DATA_T LSE6DSR_data;
-// 函数声明
+extern LSM6DSR_CALIB_T g_gyro_calib;
+
+// 基础接口
 uint8_t LSM6DSR_Init(void);
 uint8_t LSM6DSR_ReadID(void);
 void LSM6DSR_ReadData(LSM6DSR_DATA_T *physics);
@@ -80,6 +92,15 @@ void LSM6DSR_ConvertToPhysics(LSM6DSR_DATA_T *physics);
 uint8_t LSM6DSR_ReadReg(uint8_t reg);
 void LSM6DSR_WriteReg(uint8_t reg, uint8_t value);
 void LSM6DSR_ReadRegs(uint8_t reg, uint8_t *buf, uint8_t len);
+
+// 动态校准与Yaw角接口
+void    LSM6DSR_StartCalibration(uint16_t samples);  // 启动非阻塞零漂校准 (samples×2ms=总时长)
+uint8_t LSM6DSR_IsCalibrating(void);                 // 返回1=正在校准, 0=空闲
+void    LSM6DSR_UpdateYaw(float dt);                 // 在SysTick中调用，梯形积分Yaw角
+float   LSM6DSR_GetYaw(void);                        // 获取当前Yaw角（度）
+void    LSM6DSR_ClearYaw(void);                      // 清零Yaw角
+float   LSM6DSR_GetGyroZ_DPS(void);                  // 获取死区滤波后Z轴角速度（度/秒）
+float   LSM6DSR_GetRawGyroZ_DPS(void);               // 获取偏置校正但未死区过滤的Z轴角速度（度/秒）
 
 #endif
 

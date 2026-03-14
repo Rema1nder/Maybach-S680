@@ -258,6 +258,7 @@ void PositionPID_Init(PositionPID_Controller_t *controller, float kp, float ki, 
 
 	controller->last_error = 0.0f;
 	controller->integral = 0.0f;
+	controller->first_call = 1;
 }
 
 /**
@@ -288,8 +289,17 @@ float PositionPID_Calculate(PositionPID_Controller_t *controller, float current_
 		controller->integral = controller->param.integral_min;
 	float i_term = controller->param.ki * controller->integral;
 	
-	/* 微分项 */
-	float d_term = controller->param.kd * (error - controller->last_error);
+	/* 微分项：首次调用跳过，避免 last_error=0 时产生 kd*error 冲击 */
+	float d_term;
+	if(controller->first_call)
+	{
+		d_term = 0.0f;
+		controller->first_call = 0;
+	}
+	else
+	{
+		d_term = controller->param.kd * (error - controller->last_error);
+	}
 	
 	/* 陀螺仪阻尼项: 利用 Z 轴角速度抑制转弯过冲 */
 	float gyro_term = controller->param.gyro_kd * LSE6DSR_data.gz_rads;
@@ -330,12 +340,14 @@ void PositionPID_SetTarget(PositionPID_Controller_t *controller, float target_po
 
 /**
  * @brief  重置位置环 PID 控制器状态
+ * @note   只清积分，并置 first_call=1（下次调用跳过微分冲击）。
+ *         last_error 保留上次有效值，使后续帧导数正常工作。
  */
 void PositionPID_Reset(PositionPID_Controller_t *controller)
 {
 	if(controller == NULL) return;
-	controller->last_error = 0.0f;
 	controller->integral = 0.0f;
+	controller->first_call = 1;
 }
 
 /**

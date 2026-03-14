@@ -35,6 +35,7 @@
 #include "M3PWM.h"
 #include "Odometer.h"
 #include "CircleHandler.h"
+#include "BTComm.h"
 
 /** @addtogroup STM32F10x_StdPeriph_Template
   * @{
@@ -178,18 +179,9 @@ void SysTick_Handler(void)
 	add_angle += LSE6DSR_data.gy_rads * dt;  // 使用弧度/秒，正确积分
 	add_angle_num += 1.0f;
 	
-	// 偏航角积分（Z轴），供状态机使用
-	// 带死区滤波防止静止时漂移，单位：度
-	#define GYRO_DEADZONE_RAD  0.003f  // 死区阈值：约0.17 deg/s
-	#define RAD_TO_DEG  57.2957795f
-	{
-		float gz_filtered = LSE6DSR_data.gz_rads;
-		if(gz_filtered > -GYRO_DEADZONE_RAD && gz_filtered < GYRO_DEADZONE_RAD)
-		{
-			gz_filtered = 0.0f;
-		}
-		g_yaw_angle += gz_filtered * dt * RAD_TO_DEG;  // 直接转换为度
-	}
+	// Yaw角积分由驱动层统一管理（死区滤波+梯形积分），同步给外部 extern 引用
+	LSM6DSR_UpdateYaw(dt);
+	g_yaw_angle = LSM6DSR_GetYaw();
 	
 	// 保留旧的姿态解算调用（可选，用于对比）
 //	prepare_data();
@@ -214,9 +206,13 @@ void SysTick_Handler(void)
     {
       BlackPoint_Finder_Search(adc_src, &result_BlackPoint);
       
+      /* 无论是否找到，都用 precise_position 更新 position_get：
+       * 未找到时 Search 返回 last_precise_position (初始值 7.5f = 75)，
+       * 防止 position_get 停留在全局初始值 0 导致 PID 产生 kp*(0-7.5) 的冲击。 */
+      position_get = result_BlackPoint.precise_position * 10.0f;
+      
       if(result_BlackPoint.found)
       {
-        position_get = result_BlackPoint.precise_position * 10.0f;
         if(g_lose_time > 0)
         {
           g_lose_time--;
@@ -239,6 +235,7 @@ void SysTick_Handler(void)
   // 因为自动整定需要在没有 PositionLoopEnabled 的情况下运行
   // 且需要在中断中获得精确的 2ms 周期
   PID_Control_Update();
+  BT_GyroStream_Tick();  /* 陀螺仪数据流心跳，2ms 周期 */
 }
 
 /******************************************************************************/

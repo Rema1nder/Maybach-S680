@@ -9,19 +9,19 @@ LSM6DSR_DATA_T LSE6DSR_data;
 LSM6DSR_CALIB_T g_gyro_calib = {0};  // 陀螺仪校准数据
 
 // Yaw角积分相关变量
-static float g_yaw_angle   = 0.0f;   // 当前Yaw角（度）
-static float g_last_gyro_z = 0.0f;   // 上次Z轴角速度，用于梯形积分
-static float g_gyro_z_dps  = 0.0f;   // 死区滤波后Z轴角速度（度/秒）
+static float g_yaw_angle = 0.0f;       // 当前Yaw角（度）
+static float g_last_gyro_z = 0.0f;     // 上一次Z轴角速度（用于梯形积分）
+static float g_gyro_z_dps = 0.0f;      // 当前Z轴角速度（度/秒，消除零漂后）
 
-// 死区阈值（度/秒），小于此值视为噪声
+// 死区阈值（度/秒），小于此值认为是噪声
 #define GYRO_DEADZONE_DPS   0.8f
 
-// 非阻塞动态校准内部变量
+// 非阻塞动态校准变量
 static uint16_t g_gyro_calib_target = 0;
-static uint16_t g_gyro_calib_count  = 0;
-static float    g_gyro_calib_sum_x  = 0.0f;
-static float    g_gyro_calib_sum_y  = 0.0f;
-static float    g_gyro_calib_sum_z  = 0.0f;
+static uint16_t g_gyro_calib_count = 0;
+static float g_gyro_calib_sum_x = 0.0f;
+static float g_gyro_calib_sum_y = 0.0f;
+static float g_gyro_calib_sum_z = 0.0f;
 #ifdef USE_SOFTWARE_SPI
 
 // ==================== 软件SPI接口 ====================
@@ -51,7 +51,7 @@ static void SoftSPI_Init(void)
 	// MISO引脚：浮空输入
 	gpio.GPIO_Pin = LSM6DSR_MISO_PIN;
 	gpio.GPIO_Mode = GPIO_Mode_IN_FLOATING;
-	GPIO_Init(LSM6DSR_MISO_PORT, &gpio);
+	gpio.GPIO_Init(LSM6DSR_MISO_PORT, &gpio);
 }
 
 static void SoftSPI_CS_Low(void)
@@ -183,25 +183,13 @@ static void HardwareSPI_CS_High(void)
 }
 
 // 优化版：使用寄存器直接访问，减少函数调用开销
-// 添加超时保护，防止 SPI 异常导致死循环
 static uint8_t HardwareSPI_TransmitByte(uint8_t byte)
 {
-	volatile uint32_t timeout;
-	
-	// 等待发送缓冲区空（添加超时保护）
-	timeout = 1000;
-	while((SPI2->SR & SPI_I2S_FLAG_TXE) == RESET)
-	{
-		if(--timeout == 0) return 0xFF; // 超时返回
-	}
+	// 等待发送缓冲区空（使用寄存器直接访问，更快）
+	while((SPI2->SR & SPI_I2S_FLAG_TXE) == RESET);
 	SPI2->DR = byte;  // 直接写入数据寄存器
-	
-	// 等待接收完成（添加超时保护）
-	timeout = 1000;
-	while((SPI2->SR & SPI_I2S_FLAG_RXNE) == RESET)
-	{
-		if(--timeout == 0) return 0xFF; // 超时返回
-	}
+	// 等待接收完成
+	while((SPI2->SR & SPI_I2S_FLAG_RXNE) == RESET);
 	return SPI2->DR;  // 直接读取数据寄存器
 }
 
@@ -338,77 +326,77 @@ void LSM6DSR_ReadData(LSM6DSR_DATA_T *physics)
 
 /**
  * @brief  将LSM6DSR原始数据转换为标准物理单位
- * @note   加速度计：±2g，敏感度 = 16384 LSB/g
- *         陀螺仪：±2000dps，灵敏度 = 70 mdps/LSB
- *         零漂：优先使用动态校准值，未校准时回退到硬编码偏置（本板实测值）
+ * @param  physics: 输入输出结构体指针（包含原始数据，转换后填充物理量）
+ * @note   加速度计配置：±2g，敏感度 = 16384 LSB/g
+ *         陀螺仪配置：±2000dps
+ *         角速度转换：1度 = π/180 弧度 ≈ 0.017453293 rad
+ *         直接转换公式：rad/s = (原始值 / 14.3) * (π/180) = 原始值 / 14.3f
  */
 void LSM6DSR_ConvertToPhysics(LSM6DSR_DATA_T *physics)
 {
 	if(physics == 0) return;
-
-	// 加速度计：±2g，敏感度 = 16384 LSB/g
+	
+	// 加速度转换为g单位：±2g量程，敏感度 = 16384 LSB/g
 	physics->ax_g = (float)physics->ax / 16384.0f;
 	physics->ay_g = (float)physics->ay / 16384.0f;
 	physics->az_g = (float)physics->az / 16384.0f;
-
-	// 陀螺仪：CTRL2_G=0x58 → ±2000dps，灵敏度 70 mdps/LSB → 0.07 dps/LSB
-	// rad/s = LSB × 0.07 × (π/180) = LSB / 1637.02
+	
+	// 角速度转换为弧度每秒：±2000dps量程
+	// 根据LSM6DSR数据手册，敏感度 = 70 mdps/LSB = 0.07 dps/LSB
+	// 使用动态校准的零漂值替代硬编码偏移
 	const float GYRO_LSB_TO_RAD_PER_SEC = 1637.022271802352025f;
-
-	/* ---- 非阻塞后台校准采样 ---- */
+	
+	// 动态校准积分（非阻塞）
 	if(g_gyro_calib_target > 0)
 	{
 		g_gyro_calib_sum_x += (float)physics->gx;
 		g_gyro_calib_sum_y += (float)physics->gy;
 		g_gyro_calib_sum_z += (float)physics->gz;
 		g_gyro_calib_count++;
-
+		
 		if(g_gyro_calib_count >= g_gyro_calib_target)
 		{
 			g_gyro_calib.gyro_offset_x = g_gyro_calib_sum_x / (float)g_gyro_calib_target;
 			g_gyro_calib.gyro_offset_y = g_gyro_calib_sum_y / (float)g_gyro_calib_target;
 			g_gyro_calib.gyro_offset_z = g_gyro_calib_sum_z / (float)g_gyro_calib_target;
 			g_gyro_calib.calibrated = 1;
-			g_gyro_calib_target = 0;  // 结束校准状态
-			// 校准完成，清零Yaw积分起点
-			g_yaw_angle   = 0.0f;
+			
+			g_gyro_calib_target = 0; // 结束校准状态
+			
+			// 重置Yaw相关变量
+			g_yaw_angle = 0.0f;
 			g_last_gyro_z = 0.0f;
-			g_gyro_z_dps  = 0.0f;
+			g_gyro_z_dps = 0.0f;
 		}
 	}
 
-	/* ---- 角速度转换（优先动态校准，否则硬编码兜底） ---- */
 	if(g_gyro_calib.calibrated)
 	{
+		// 使用动态校准的零漂值
 		physics->gx_rads = ((float)physics->gx - g_gyro_calib.gyro_offset_x) / GYRO_LSB_TO_RAD_PER_SEC;
 		physics->gy_rads = ((float)physics->gy - g_gyro_calib.gyro_offset_y) / GYRO_LSB_TO_RAD_PER_SEC;
 		physics->gz_rads = ((float)physics->gz - g_gyro_calib.gyro_offset_z) / GYRO_LSB_TO_RAD_PER_SEC;
 	}
 	else
 	{
-		// 本板实测硬编码零漂偏置（未完成动态校准时兜底）
-		physics->gx_rads = ((float)physics->gx - 13.344f) / GYRO_LSB_TO_RAD_PER_SEC;
-		physics->gy_rads = ((float)physics->gy + 16.204f) / GYRO_LSB_TO_RAD_PER_SEC;
-		physics->gz_rads = ((float)physics->gz +  5.056f) / GYRO_LSB_TO_RAD_PER_SEC;
+		// 未校准时使用原来的硬编码偏移（兼容）
+		physics->gx_rads = ((float)physics->gx - 3.519f) / GYRO_LSB_TO_RAD_PER_SEC;
+		physics->gy_rads = ((float)physics->gy + 12.03f) / GYRO_LSB_TO_RAD_PER_SEC;
+		physics->gz_rads = ((float)physics->gz + 3.205f) / GYRO_LSB_TO_RAD_PER_SEC;
 	}
 }
 
-/* ========================================================================== */
-/*                       动态校准 & Yaw角接口                                  */
-/* ========================================================================== */
-
 /**
- * @brief  非阻塞启动陀螺仪零漂校准
- * @param  samples  采样次数 (SysTick 2ms 周期，1000次 = 2s)
- * @note   校准期间小车必须静止，完成后 g_gyro_calib.calibrated 置1
+ * @brief  非阻塞启动陀螺仪零漂校准 (在 SysTick 中后台执行)
+ * @param  samples: 采样次数 (例如 1000 代表 2秒)
  */
 void LSM6DSR_StartCalibration(uint16_t samples)
 {
 	g_gyro_calib_target = samples;
-	g_gyro_calib_count  = 0;
-	g_gyro_calib_sum_x  = 0.0f;
-	g_gyro_calib_sum_y  = 0.0f;
-	g_gyro_calib_sum_z  = 0.0f;
+	g_gyro_calib_count = 0;
+	g_gyro_calib_sum_x = 0.0f;
+	g_gyro_calib_sum_y = 0.0f;
+	g_gyro_calib_sum_z = 0.0f;
 	g_gyro_calib.calibrated = 0;
 }
 
@@ -418,33 +406,37 @@ void LSM6DSR_StartCalibration(uint16_t samples)
  */
 uint8_t LSM6DSR_IsCalibrating(void)
 {
-	return (g_gyro_calib_target > 0) ? 1 : 0;
+    return (g_gyro_calib_target > 0) ? 1 : 0;
 }
 
 /**
- * @brief  更新Yaw角积分（在SysTick中每帧调用）
- * @param  dt  采样周期（秒）
- * @note   采用梯形积分；死区 ±0.8 deg/s 内清零，避免噪声漫积
+ * @brief  更新Yaw角积分（在SysTick中调用）
+ * @param  dt: 采样周期（秒）
  */
 void LSM6DSR_UpdateYaw(float dt)
 {
-	const float RAD_TO_DEG = 57.2957795131f;
+	// 将弧度/秒转换为度/秒
+	const float RAD_TO_DEG = 57.2957795131f;  // 180/π
 	float gyro_z = LSE6DSR_data.gz_rads * RAD_TO_DEG;
-
-	// 死区滤波
+	
+	// 死区滤波：角速度小于阈值时置零，避免噪声积累
 	if(fabsf(gyro_z) < GYRO_DEADZONE_DPS)
 	{
 		gyro_z = 0.0f;
 	}
+	
 	g_gyro_z_dps = gyro_z;
-
-	// 梯形积分（比矩形积分在角速度变化时误差更小）
+	
+	// 梯形积分（比矩形积分更精确）
 	g_yaw_angle += (g_last_gyro_z + gyro_z) * 0.5f * dt;
+	
+	// 保存当前值用于下次梯形积分
 	g_last_gyro_z = gyro_z;
 }
 
 /**
- * @brief  获取当前Yaw角（度）
+ * @brief  获取当前Yaw角
+ * @return Yaw角（度）
  */
 float LSM6DSR_GetYaw(void)
 {
@@ -456,25 +448,15 @@ float LSM6DSR_GetYaw(void)
  */
 void LSM6DSR_ClearYaw(void)
 {
-	g_yaw_angle   = 0.0f;
+	g_yaw_angle = 0.0f;
 	g_last_gyro_z = 0.0f;
 }
 
 /**
- * @brief  获取死区滤波后Z轴角速度（度/秒）
+ * @brief  获取当前Z轴角速度（消除零漂后）
+ * @return 角速度（度/秒）
  */
 float LSM6DSR_GetGyroZ_DPS(void)
 {
 	return g_gyro_z_dps;
 }
-
-/**
- * @brief  获取偏置校正但未经死区过滤的Z轴角速度（度/秒）
- * @note   用于与死区滤波后的值对比，验证滤波效果
- */
-float LSM6DSR_GetRawGyroZ_DPS(void)
-{
-	const float RAD_TO_DEG = 57.2957795131f;
-	return LSE6DSR_data.gz_rads * RAD_TO_DEG;
-}
-

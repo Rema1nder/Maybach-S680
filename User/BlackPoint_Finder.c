@@ -4,17 +4,21 @@
 // 传感器配置数组 (保留用于兼容性)
 static SensorConfig_t sensor_config[SENSOR_COUNT];
 
-// 传感器独立阈值 (Min_White + Max_Black) / 2
-// 全白: 529,491,532,562,651,611,572,605,579,524,587,552,553,506,530,534
-// 全黑: 376,307,312,317,355,364,344,377,353,316,368,352,341,303,341,340
-static const uint16_t SENSOR_THRESHOLDS[SENSOR_COUNT] = {
+// 传感器独立阈值 (Min_White + Max_Black) / 2，可由校准自动更新
+// 默认值来自手动测量: 全白与全黑的均值
+static uint16_t sensor_thresholds[SENSOR_COUNT] = {
     452, 399, 422, 439, 503, 487, 458, 491,
     466, 420, 477, 452, 447, 404, 435, 437
 };
 
 // 状态记录用于迟滞 (0=White, 1=Black)
 static uint8_t sensor_states[SENSOR_COUNT] = {0};
-#define HYSTERESIS 20
+static uint16_t s_hysteresis = 20;  // 可动态调整的迟滞量
+
+/* ===== 校准相关 ===== */
+static uint8_t  s_calib_active = 0;
+static uint16_t s_calib_min[SENSOR_COUNT];
+static uint16_t s_calib_max[SENSOR_COUNT];
 
 // 上一次找到的黑点位置
 static uint8_t last_position = 7; // (SENSOR_COUNT - 1) / 2 = 7 (向下取整)
@@ -75,12 +79,12 @@ uint8_t BlackPoint_Finder_IsBlackPoint(uint8_t sensor_idx, uint16_t adc_value)
 	if(sensor_idx >= SENSOR_COUNT)
 		return 0;
 	
-    threshold = SENSOR_THRESHOLDS[sensor_idx];
+    threshold = sensor_thresholds[sensor_idx];
     
     // 迟滞判断: Black < (Thr - Hys), White > (Thr + Hys)
     // 根据数据: Black值低, White值高
-    lower = (threshold > HYSTERESIS) ? (threshold - HYSTERESIS) : 0;
-    upper = threshold + HYSTERESIS;
+    lower = (threshold > s_hysteresis) ? (threshold - s_hysteresis) : 0;
+    upper = threshold + s_hysteresis;
     
     if (adc_value < lower) {
         sensor_states[sensor_idx] = 1; // 变黑
@@ -145,7 +149,7 @@ float BlackPoint_Finder_Search(volatile uint16_t *adc_values, BlackPointResult_t
             // 简单的加权计算位置
             // 这里使用基础权重 100 + 黑度差值 (Threshold - Value)
             float diff = 0.0f;
-            uint16_t thr = SENSOR_THRESHOLDS[i];
+            uint16_t thr = sensor_thresholds[i];
             
             if(thr > adc_values[i]) {
                 diff = (float)(thr - adc_values[i]);
@@ -176,7 +180,6 @@ float BlackPoint_Finder_Search(volatile uint16_t *adc_values, BlackPointResult_t
 	if(precise_pos < 0.0f) precise_pos = 0.0f;
 	if(precise_pos > (float)(SENSOR_COUNT - 1)) precise_pos = (float)(SENSOR_COUNT - 1);
 	
-	// 更新结果
 	result->found = 1;
 	result->position = (uint8_t)(precise_pos + 0.5f);
 	result->precise_position = precise_pos;
@@ -187,7 +190,6 @@ float BlackPoint_Finder_Search(volatile uint16_t *adc_values, BlackPointResult_t
 }
 
 /**
- * @brief 获取上一次找到的黑点位置
  */
 uint8_t BlackPoint_Finder_GetLastPosition(void)
 {
@@ -416,7 +418,7 @@ float BlackPoint_Finder_SearchHalf(volatile uint16_t *adc_values, uint8_t side, 
 		if(BlackPoint_Finder_IsBlackPoint(i, adc_values[i]))
 		{
 			float diff = 0.0f;
-			uint16_t thr = SENSOR_THRESHOLDS[i];
+			uint16_t thr = sensor_thresholds[i];
 			if(thr > adc_values[i])
 			{
 				diff = (float)(thr - adc_values[i]);
@@ -449,3 +451,71 @@ float BlackPoint_Finder_SearchHalf(volatile uint16_t *adc_values, uint8_t side, 
 	return precise_pos;
 }
 
+/* ========================================================================== */
+/*                             光电管动态校准                                 */
+/* ========================================================================== */
+
+void BlackPoint_Finder_StartCalib(void)
+{
+	uint8_t i;
+	for(i = 0; i < SENSOR_COUNT; i++)
+	{
+		s_calib_min[i] = 0xFFFFU;
+		s_calib_max[i] = 0U;
+	}
+	s_calib_active = 1;
+	printf("[CALIB] Sensor calibration started. Sweep over black/white track...\r\n");
+}
+
+uint8_t BlackPoint_Finder_IsCalibrating(void)
+{
+	return s_calib_active;
+}
+
+void BlackPoint_Finder_UpdateCalib(volatile uint16_t *adc_values)
+{
+	uint8_t i;
+	if(!s_calib_active || adc_values == NULL) return;
+	for(i = 0; i < SENSOR_COUNT; i++)
+	{
+		uint16_t v = adc_values[i];
+		if(v < s_calib_min[i]) s_calib_min[i] = v;
+		if(v > s_calib_max[i]) s_calib_max[i] = v;
+	}
+}
+
+void BlackPoint_Finder_EndCalib(void)
+{
+	uint8_t i;
+	uint16_t global_hys = 0xFFFFU;
+	char buf[64];
+
+	if(!s_calib_active) return;
+	s_calib_active = 0;
+
+	printf("[CALIB] Done. Thresholds:\r\n");
+	for(i = 0; i < SENSOR_COUNT; i++)
+	{
+		uint16_t range;
+		if(s_calib_max[i] <= s_calib_min[i])
+		{
+			printf("  ch%d: SKIP (no valid data)\r\n", i);
+			continue;
+		}
+		sensor_thresholds[i] = (s_calib_min[i] + s_calib_max[i]) / 2U;
+		range = s_calib_max[i] - s_calib_min[i];
+		{
+			uint16_t hys = range * 15U / 100U;
+			if(hys < 10U) hys = 10U;
+			if(hys > 80U) hys = 80U;
+			if(hys < global_hys) global_hys = hys;
+		}
+		sprintf(buf, "  ch%d: min=%d max=%d thr=%d\r\n",
+				i, s_calib_min[i], s_calib_max[i], sensor_thresholds[i]);
+		printf("%s", buf);
+	}
+	if(global_hys == 0xFFFFU || global_hys < 10U) global_hys = 10U;
+	s_hysteresis = global_hys;
+	printf("[CALIB] Hysteresis applied: %d\r\n", s_hysteresis);
+	for(i = 0; i < SENSOR_COUNT; i++) sensor_states[i] = 0;
+}
