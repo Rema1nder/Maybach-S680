@@ -136,3 +136,30 @@ void M3PWM_SetFrequency(uint32_t freq)
     // 重新设置占空比
     M3PWM_SetDutyCycle(g_pwm_duty_cycle);
 } 
+#include "Delay.h"
+
+void M3PWM_SetDutyCycle_Soft(uint16_t target_duty, uint16_t step_delay_ms)
+{
+    if(target_duty > 1000) target_duty = 1000;
+    
+    int16_t current_duty = g_pwm_duty_cycle;
+    int16_t target = target_duty;
+    
+    while(current_duty != target)
+    {
+        if(current_duty < target)
+        {
+            current_duty += 10;
+            if(current_duty > target) current_duty = target;
+        }
+        else
+        {
+            if(current_duty >= 10) current_duty -= 10;
+            else current_duty = 0;
+            if(current_duty < target) current_duty = target;
+        }
+        
+        M3PWM_SetDutyCycle((uint16_t)current_duty);
+        Delay_ms(step_delay_ms);
+    }
+}

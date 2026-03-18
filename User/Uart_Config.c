@@ -70,18 +70,30 @@ void Uart2_Init(uint32_t baudrate)
 extern uint16_t uart_rev_tiem;
 void USART2_IRQHandler(void)
 {
-	if(USART_GetITStatus(USART2, USART_IT_RXNE) != RESET)
-	{
-		uart_rev_tiem = 0;
-		uint8_t data = (uint8_t)USART_ReceiveData(USART2);
-		uint16_t next = (uint16_t)((s_usart2_rx_head + 1) % USART2_RX_BUFFER_SIZE);
-		if(next != s_usart2_rx_tail)
-		{
-			s_usart2_rx_buffer[s_usart2_rx_head] = data;
-			s_usart2_rx_head = next;
-		}
-		// 否则丢弃字节以避免覆盖
-	}
+    if(USART_GetITStatus(USART2, USART_IT_RXNE) != RESET)
+    {
+        uart_rev_tiem = 0;
+        uint8_t data = (uint8_t)USART_ReceiveData(USART2);
+        uint16_t next = (uint16_t)((s_usart2_rx_head + 1) % USART2_RX_BUFFER_SIZE);
+        if(next != s_usart2_rx_tail)
+        {
+            s_usart2_rx_buffer[s_usart2_rx_head] = data;
+            s_usart2_rx_head = next;
+        }
+        // 否则丢弃字节以避免覆盖
+    }
+    
+    // 清除由于EMI、过载等造成的溢出错误、帧错误等硬件级错误，否则直接卡死芯片
+    if (USART_GetFlagStatus(USART2, USART_FLAG_ORE) != RESET || 
+        USART_GetFlagStatus(USART2, USART_FLAG_NE) != RESET || 
+        USART_GetFlagStatus(USART2, USART_FLAG_FE) != RESET || 
+        USART_GetFlagStatus(USART2, USART_FLAG_PE) != RESET)
+    {
+        // 读取SR然后读取DR会清除溢出等错误标志
+        volatile uint32_t temp = USART2->SR;
+        temp = USART2->DR;
+        (void)temp;
+    }
 }
 
 void Uart2_SendByte(uint8_t byte)
